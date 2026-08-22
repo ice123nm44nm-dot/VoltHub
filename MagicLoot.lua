@@ -31,12 +31,16 @@ local HumanModule = UtilsSystem.HumanModule
 local EquipShop = UtilsSystem.EquipShop
 local PlayerData = UtilsSystem.PlayerData
 local CfgFind = UtilsSystem.CfgFind
+local GetData = nil
+pcall(function()
+    GetData = require(game:GetService("ReplicatedFirst").AllSideCode.ToolSystem.GetData)
+end)
 
-local MAX_STAGE = 24
+local MAX_STAGE = 32
 
 local cfg = {
     farm = false,
-    maxStage = 24,
+    maxStage = 32,
     speed = 60,
     attackInterval = 0.16,
     autoLoot = false,
@@ -50,6 +54,7 @@ local cfg = {
     sellMinPrice = nil,
     autoRebirth = false,
     autoClaim = false,
+    autoTrain = false,
 }
 
 local RARITY_NAMES = {
@@ -506,6 +511,80 @@ local function rebirthLoop()
     end
 end
 
+-- Auto Train helpers
+local function getBestTrainId()
+    local Gd = GetData
+    if not Gd or not Gd.Train then
+        local ok, mod = pcall(function() return require(game:GetService("ReplicatedFirst").AllSideCode.ToolSystem.GetData) end)
+        if ok and mod then Gd = mod else return nil end
+    end
+    if not Gd.Train.CanEnterTrainGround then return nil end
+    local best = nil
+    for id = 1, 12 do
+        local ok, res = pcall(function() return Gd.Train.CanEnterTrainGround(LocalPlayer, id) end)
+        if ok and res and res.ok then
+            best = id
+        end
+    end
+    return best
+end
+
+local function getCurrentTrainId()
+    local Gd = GetData
+    if not Gd or not Gd.Train then
+        local ok, mod = pcall(function() return require(game:GetService("ReplicatedFirst").AllSideCode.ToolSystem.GetData) end)
+        if ok and mod then Gd = mod else return nil end
+    end
+    if not Gd.Train.IsPlayerInTrainZone then return nil end
+    for id = 1, 12 do
+        local ok, inside = pcall(function() return Gd.Train.IsPlayerInTrainZone(LocalPlayer, id) end)
+        if ok and inside then return id end
+    end
+    return nil
+end
+
+local function teleportToTrain(trainId)
+    local Gd = GetData
+    if not Gd or not Gd.Train then
+        local ok, mod = pcall(function() return require(game:GetService("ReplicatedFirst").AllSideCode.ToolSystem.GetData) end)
+        if ok and mod then Gd = mod else return false end
+    end
+    local ok, part = pcall(function() return Gd.Train.FindZonePartByTrainId(trainId) end)
+    if not ok or not part then return false end
+    local hrp = getHrp()
+    if hrp then
+        local targetPos = part.Position + Vector3.new(0, 3, 0)
+        hrp.CFrame = CFrame.new(targetPos) * (hrp.CFrame - hrp.CFrame.Position)
+        task.wait(0.4)
+        pcall(function() NetWork.FireServer(NetMsg.TRAIN_ZONE_UPDATE, { trainId = trainId }) end)
+        return true
+    end
+    return false
+end
+
+local function trainLoop()
+    while cfg.autoTrain do
+        if isInDungeon() then
+            setStatus("อยู่ในดันเจี้ยน รอออกก่อน Train")
+            task.wait(3)
+        else
+            local best = getBestTrainId()
+            if best then
+                local cur = getCurrentTrainId()
+                if cur ~= best then
+                    setStatus("ย้าย Train " .. tostring(cur or 0) .. " -> " .. tostring(best))
+                    teleportToTrain(best)
+                else
+                    setStatus("Training ที่ดีที่สุด: " .. tostring(best) .. " (Rebirth " .. tostring(math.floor(getRebirth())) .. ")")
+                end
+            else
+                setStatus("หา Train ที่เข้าได้ไม่เจอ")
+            end
+            task.wait(3)
+        end
+    end
+end
+
 local hoverPlatform = nil
 
 local function ensureHoverPlatform()
@@ -774,7 +853,7 @@ local function farmLoop()
 end
 
 local Window = Fluent:CreateWindow({
-    Title = "Kala Hub",
+    Title = "VoltScriptZ",
     SubTitle = "Magic Loot",
     TabWidth = 130,
     Size = UDim2.fromOffset(620, 480),
@@ -922,7 +1001,7 @@ local StopSlider = SectionMain:AddSlider("StopAtStage", {
     Desc = "Stop At Stage",
     Min = 1,
     Max = MAX_STAGE,
-    Default = 24,
+    Default = 32,
     Rounding = 0,
     Callback = function(value)
         cfg.maxStage = math.floor(value)
@@ -1191,6 +1270,54 @@ local function tryClaimIndexTab(tag)
     return false
 end
 
+local function tryClaimOnlineAwards()
+    local okBox, box = pcall(function()
+        return PlayerData.GetPlrDataByKey(LocalPlayer, "OnlineBox")
+    end)
+    if not okBox or type(box) ~= "table" then
+        return false
+    end
+    local onlineSeconds = tonumber(box.OnlineSeconds) or 0
+    local okList, list = pcall(function()
+        return CfgFind.GetOnlineAwardList()
+    end)
+    if not okList or type(list) ~= "table" then
+        return false
+    end
+    local claimedAny = false
+    for _, award in ipairs(list) do
+        if not cfg.autoClaim then
+            break
+        end
+        local id = tonumber(award.id)
+        if id and not CfgFind.IsOnlineTierClaimed(box, id) then
+            local view = {}
+            for k, v in pairs(box) do
+                view[k] = v
+            end
+            view.OnlineSeconds = onlineSeconds
+            if CfgFind.IsOnlineTierClaimable(view, award) then
+                local ok, res = pcall(function()
+                    return NetWork.InvokeServer(NetMsg.CLAIM_ONLINE_AWARD, id)
+                end)
+                if ok and res == true then
+                    setStatus(("Online Award " .. tostring(id) .. " สำเร็จ"))
+                    claimedAny = true
+                    task.wait(0.6)
+                    local ok2, newBox = pcall(function()
+                        return PlayerData.GetPlrDataByKey(LocalPlayer, "OnlineBox")
+                    end)
+                    if ok2 and type(newBox) == "table" then
+                        box = newBox
+                        onlineSeconds = tonumber(box.OnlineSeconds) or onlineSeconds
+                    end
+                end
+            end
+        end
+    end
+    return claimedAny
+end
+
 local function claimLoop()
     while cfg.autoClaim do
         task.wait(3)
@@ -1200,18 +1327,21 @@ local function claimLoop()
                 break
             end
             local claimedPot = tryClaimIndexTab("Potion")
-            if cfg.autoClaim and (claimedMat or claimedPot) then
+            if not cfg.autoClaim then
+                break
+            end
+            local claimedOnline = tryClaimOnlineAwards()
+            if cfg.autoClaim and (claimedMat or claimedPot or claimedOnline) then
                 task.wait(1)
             end
         end
     end
 end
-
 local SectionClaim = TabDungeon:AddSection("Auto Claim")
 
 AutoClaimToggle = SectionClaim:AddToggle("AutoClaim", {
     Title = "Auto Claim",
-    Desc = "Claim Materials & Potions",
+    Desc = "Claim Materials, Potions & Online Rewards",
     Default = false,
     Callback = function(state)
         cfg.autoClaim = state
@@ -1224,6 +1354,37 @@ AutoClaimToggle = SectionClaim:AddToggle("AutoClaim", {
     end,
 })
 
+
+local SectionTrain = TabDungeon:AddSection("Auto Train")
+local AutoTrainToggle = nil
+AutoTrainToggle = SectionTrain:AddToggle("AutoTrain", {
+    Title = "Auto Train",
+    Desc = "ย้ายที่ Train อัตโนมัติตาม Rebirth",
+    Default = false,
+    Callback = function(state)
+        cfg.autoTrain = state
+        if state then
+            setStatus("Auto Train เปิด")
+            task.spawn(trainLoop)
+        else
+            setStatus("Auto Train ปิด")
+        end
+    end,
+})
+SectionTrain:AddButton({
+    Title = "Go Best Train Now",
+    Callback = function()
+        task.spawn(function()
+            local best = getBestTrainId()
+            if best then
+                teleportToTrain(best)
+                notify("Auto Train", "ย้ายไป Train " .. tostring(best) .. " แล้ว")
+            else
+                notify("Auto Train", "หา Train ไม่เจอ")
+            end
+        end)
+    end,
+})
 local SectionConfig = TabSettings:AddSection("Config")
 
 local CONFIG_FOLDER = "KalaHubConfigs"
@@ -1264,6 +1425,8 @@ local function configToData()
         sellRarity = cfg.sellRarity,
         sellMinPrice = cfg.sellMinPrice,
         autoRebirth = cfg.autoRebirth,
+        autoClaim = cfg.autoClaim,
+        autoTrain = cfg.autoTrain,
     }
 end
 
@@ -1287,7 +1450,7 @@ local function applyConfigData(data)
         return
     end
     if type(data.farm) == "boolean" then cfg.farm = data.farm end
-    if type(data.maxStage) == "number" then cfg.maxStage = data.maxStage end
+    if type(data.maxStage) == "number" then cfg.maxStage = math.clamp(math.floor(data.maxStage), 1, MAX_STAGE) end
     if type(data.speed) == "number" then cfg.speed = data.speed end
     if type(data.attackInterval) == "number" then cfg.attackInterval = data.attackInterval end
     if type(data.autoLoot) == "boolean" then cfg.autoLoot = data.autoLoot end
@@ -1300,6 +1463,8 @@ local function applyConfigData(data)
     if type(data.sellRarity) == "table" then cfg.sellRarity = cleanRarityTable(data.sellRarity) end
     if type(data.sellMinPrice) == "number" then cfg.sellMinPrice = data.sellMinPrice end
     if type(data.autoRebirth) == "boolean" then cfg.autoRebirth = data.autoRebirth end
+    if type(data.autoClaim) == "boolean" then cfg.autoClaim = data.autoClaim end
+    if type(data.autoTrain) == "boolean" then cfg.autoTrain = data.autoTrain end
 end
 
 local function syncUIFromCfg()
@@ -1354,6 +1519,12 @@ local function syncUIFromCfg()
     end)
     pcall(function()
         AutoRebirthToggle:SetValue(cfg.autoRebirth)
+    end)
+    pcall(function()
+        if AutoClaimToggle then AutoClaimToggle:SetValue(cfg.autoClaim) end
+    end)
+    pcall(function()
+        if AutoTrainToggle then AutoTrainToggle:SetValue(cfg.autoTrain) end
     end)
     pcall(function()
         SpeedSlider:SetValue(SpeedHook.baseSpeed)
@@ -1567,6 +1738,34 @@ getgenv().KalaRebirthNow = function()
 end
 getgenv().KalaRebirthCan = function()
     return canRebirth()
+end
+getgenv().KalaTrainStart = function()
+    cfg.autoTrain = true
+    if not getgenv()._kalaTrainRunning then
+        getgenv()._kalaTrainRunning = true
+        task.spawn(function()
+            trainLoop()
+            getgenv()._kalaTrainRunning = nil
+        end)
+    end
+end
+getgenv().KalaTrainStop = function()
+    cfg.autoTrain = false
+end
+getgenv().KalaTrainBest = function()
+    local ok, res = pcall(getBestTrainId)
+    if not ok then warn("KalaTrainBest error: "..tostring(res)) return nil end
+    return res
+end
+getgenv().KalaTrainCurrent = function()
+    return getCurrentTrainId()
+end
+getgenv().KalaTrainGo = function(id)
+    local tid = tonumber(id) or getBestTrainId()
+    if tid then
+        return teleportToTrain(tid)
+    end
+    return false
 end
 
 -- clean up the hover platform if this script is re-run/reloaded
