@@ -70,10 +70,8 @@ local RARITY_NAMES = {
     [10] = "Stellar",
 }
 
-local Status = ""
 local AutoDungeonToggle = nil
 local AutoLootToggle = nil
-local StatusParagraph = nil
 
 local function notify(title, content)
     pcall(function()
@@ -81,14 +79,6 @@ local function notify(title, content)
     end)
 end
 
-local function setStatus(s)
-    Status = s
-    if StatusParagraph then
-        pcall(function()
-            StatusParagraph:SetDesc(s)
-        end)
-    end
-end
 
 local function getHrp()
     local char = LocalPlayer.Character
@@ -308,7 +298,6 @@ local function lootLoop()
     while cfg.autoLoot do
         local n = collectDrops()
         if n > 0 then
-            setStatus("เก็บ " .. n .. " ชิ้น (bag " .. getLimitBagUsed() .. "/" .. getLimitBagSize() .. ")")
         end
         task.wait(2)
     end
@@ -382,7 +371,6 @@ local function buyEquipOnce()
                     NetWork.InvokeServer(NetMsg.EQUIP_SHOP_EQUIP, { equipID = best.id, itemType = shop.itemType })
                 end)
                 notify("Auto Buy", "ซื้อ " .. shop.label .. " แล้ว")
-                setStatus("ซื้อ " .. shop.label .. " แล้ว")
                 bought = bought + 1
                 task.wait(1)
             end
@@ -448,7 +436,6 @@ local function sellLoop()
     while cfg.autoSell do
         local n = sellMaterialsOnce()
         if n > 0 then
-            setStatus("ขายแล้ว " .. n .. " ชิ้น")
         end
         task.wait(5)
     end
@@ -504,7 +491,6 @@ local function rebirthLoop()
         if canRebirth() then
             if doRebirth() then
                 notify("Auto Rebirth", "Rebirth แล้ว")
-                setStatus("Rebirth แล้ว")
             end
         end
         task.wait(5)
@@ -565,20 +551,16 @@ end
 local function trainLoop()
     while cfg.autoTrain do
         if isInDungeon() then
-            setStatus("อยู่ในดันเจี้ยน รอออกก่อน Train")
             task.wait(3)
         else
             local best = getBestTrainId()
             if best then
                 local cur = getCurrentTrainId()
                 if cur ~= best then
-                    setStatus("ย้าย Train " .. tostring(cur or 0) .. " -> " .. tostring(best))
                     teleportToTrain(best)
                 else
-                    setStatus("Training ที่ดีที่สุด: " .. tostring(best) .. " (Rebirth " .. tostring(math.floor(getRebirth())) .. ")")
                 end
             else
-                setStatus("หา Train ที่เข้าได้ไม่เจอ")
             end
             task.wait(3)
         end
@@ -705,7 +687,6 @@ local function stopFarm()
             AutoDungeonToggle:SetValue(false)
         end)
     end
-    setStatus("ปิด Auto Dungeon")
 end
 
 local function waitForRespawn(stage)
@@ -720,7 +701,6 @@ local function waitForRespawn(stage)
     else
         target = area.Position + Vector3.new(0, 2, area.Size.Z * 0.5 + 6)
     end
-    setStatus("Stage " .. stage .. " รอ Respaw น")
     tweenTo(target + Vector3.new(0, 2, 0), cfg.speed)
     local deadline = os.clock() + 40
     while cfg.farm and os.clock() < deadline do
@@ -734,7 +714,6 @@ end
 
 local function fightStage(stage)
     if not isHoldingWeapon() then
-        setStatus("ต้องถืออาวุธก่อน")
         return false
     end
     local monsters = getStageMonsters(stage)
@@ -755,7 +734,6 @@ local function fightStage(stage)
     if not best then
         return false
     end
-    setStatus("Stage " .. stage)
     tweenTo(hoverPoint(best), cfg.speed)
     local lastTap = 0
     while cfg.farm do
@@ -789,7 +767,6 @@ local function farmLoop()
         else
             local nextStage = getNextStage()
             if nextStage > MAX_STAGE then
-                setStatus("ถึง Stage สูงสุดแล้ว")
                 stopFarm()
             else
                 local targetStage = nextStage
@@ -800,19 +777,15 @@ local function farmLoop()
                 if curStage ~= targetStage then
                     local area = getBattleArea(targetStage)
                     if not area then
-                        setStatus("ไม่มีพื้นที่ Stage " .. targetStage)
                         stopFarm()
                     else
-                        setStatus("Go Stage " .. targetStage)
                         tweenTo(area.Position + Vector3.new(0, 5, 0), cfg.speed)
                         task.wait(0.4)
                         if not isInDungeon() then
                             fireDungeonSpawn(targetStage)
-                            setStatus("เข้า Stage " .. targetStage)
                             task.wait(1.5)
                         end
                         if isBagFull() then
-                            setStatus("กระเป๋าเต็ม กลับเมือง")
                             returnToTown()
                             task.wait(4)
                             if cfg.farm then
@@ -828,12 +801,10 @@ local function farmLoop()
                 else
                     if not isInDungeon() then
                         fireDungeonSpawn(curStage)
-                        setStatus("เข้า Stage " .. curStage)
                         task.wait(1.5)
                     end
                     local fought = fightStage(curStage)
                     if isBagFull() then
-                        setStatus("กระเป๋าเต็ม กลับเมือง")
                         returnToTown()
                         task.wait(4)
                     elseif not fought then
@@ -991,7 +962,6 @@ AutoDungeonToggle = SectionMain:AddToggle("AutoDungeon", {
         if state then
             task.spawn(farmLoop)
         else
-            setStatus("ปิด Auto Dungeon")
         end
     end,
 })
@@ -1017,10 +987,8 @@ AutoLootToggle = SectionLoot:AddToggle("AutoLoot", {
     Callback = function(state)
         cfg.autoLoot = state
         if state then
-            setStatus("Auto Loot เปิด")
             task.spawn(lootLoop)
         else
-            setStatus("Auto Loot ปิด")
         end
     end,
 })
@@ -1092,10 +1060,8 @@ local AutoBuyToggle = SectionBuy:AddToggle("AutoBuy", {
     Callback = function(state)
         cfg.autoBuy = state
         if state then
-            setStatus("Auto Buy เปิด")
             task.spawn(buyLoop)
         else
-            setStatus("Auto Buy ปิด")
         end
     end,
 })
@@ -1134,10 +1100,8 @@ local AutoSellToggle = SectionSell:AddToggle("AutoSell", {
     Callback = function(state)
         cfg.autoSell = state
         if state then
-            setStatus("Auto Sell เปิด")
             task.spawn(sellLoop)
         else
-            setStatus("Auto Sell ปิด")
         end
     end,
 })
@@ -1203,10 +1167,8 @@ local AutoRebirthToggle = SectionRebirth:AddToggle("AutoRebirth", {
     Callback = function(state)
         cfg.autoRebirth = state
         if state then
-            setStatus("Auto Rebirth เปิด")
             task.spawn(rebirthLoop)
         else
-            setStatus("Auto Rebirth ปิด")
         end
     end,
 })
@@ -1264,7 +1226,6 @@ local function tryClaimIndexTab(tag)
         })
     end)
     if ok then
-        setStatus(("Auto Claim %s สำเร็จ"):format(tag))
         return true
     end
     return false
@@ -1301,7 +1262,6 @@ local function tryClaimOnlineAwards()
                     return NetWork.InvokeServer(NetMsg.CLAIM_ONLINE_AWARD, id)
                 end)
                 if ok and res == true then
-                    setStatus(("Online Award " .. tostring(id) .. " สำเร็จ"))
                     claimedAny = true
                     task.wait(0.6)
                     local ok2, newBox = pcall(function()
@@ -1346,10 +1306,8 @@ AutoClaimToggle = SectionClaim:AddToggle("AutoClaim", {
     Callback = function(state)
         cfg.autoClaim = state
         if state then
-            setStatus("Auto Claim เปิด")
             task.spawn(claimLoop)
         else
-            setStatus("Auto Claim ปิด")
         end
     end,
 })
@@ -1364,10 +1322,8 @@ AutoTrainToggle = SectionTrain:AddToggle("AutoTrain", {
     Callback = function(state)
         cfg.autoTrain = state
         if state then
-            setStatus("Auto Train เปิด")
             task.spawn(trainLoop)
         else
-            setStatus("Auto Train ปิด")
         end
     end,
 })
@@ -1646,11 +1602,6 @@ local ThemeDropdown = SectionUISettings:AddDropdown("Theme", {
     Callback = function(color)
         pcall(Fluent.SetTheme, Fluent, color)
     end,
-})
-
-StatusParagraph = SectionMain:AddParagraph({
-    Title = "Status",
-    Content = "Idle",
 })
 
 SectionMain:AddButton({
