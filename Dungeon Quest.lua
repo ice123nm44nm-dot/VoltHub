@@ -117,7 +117,7 @@ local LP = Players.LocalPlayer
 local Config = {
     AutoFarm = false,
     Position = "Overhead",
-    TweenSpeed = 20,
+    TweenSpeed = 10,
     FarmDistance = 10, -- Overhead/Below/Behind distance
     AttackDelay = 0.14,
     Noclip = true,
@@ -391,7 +391,20 @@ task.spawn(function()
         if game.PlaceId == 77649408247578 then continue end
         local hrp = getHRP()
         local hum = getHumanoid()
-        if not hrp or not hum then continue end
+        if not hrp or not hum then
+            -- ตายแล้วรอเกิดใหม่
+            if not isAlive(LP.Character or workspace:FindFirstChild(LP.Name)) then
+                task.wait(1.5)
+                repeat task.wait(0.5) hrp = getHRP() hum = getHumanoid() until hrp and hum and isAlive(hrp.Parent) or not Config.AutoFarm or Fluent.Unloaded
+                if hum then hum.AutoRotate = false end
+                setNoclip(Config.AutoFarm)
+            end
+            continue
+        end
+        if hum.Health <= 0 then
+            task.wait(1)
+            continue
+        end
         local target = getClosestMob()
         if not target or not target.Parent then
             task.wait(0.3)
@@ -413,6 +426,10 @@ task.spawn(function()
         local startAtk = tick()
         while Config.AutoFarm and target.Parent and isAlive(target) and thrp.Parent do
             if Fluent.Unloaded then break end
+            -- ถ้าตัวเองตายให้หลุดจากลูปไปรอเกิด
+            hrp = getHRP()
+            hum = getHumanoid()
+            if not hrp or not hum or hum.Health <= 0 or not isAlive(hrp.Parent) then break end
             local curFarm = getFarmCFrame(thrp)
             local dist = (hrp.Position - curFarm.Position).Magnitude
             if dist > 5 then
