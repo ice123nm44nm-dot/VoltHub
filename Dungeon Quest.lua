@@ -117,7 +117,7 @@ local LP = Players.LocalPlayer
 local Config = {
     AutoFarm = false,
     Position = "Overhead",
-    TweenSpeed = 200,
+    TweenSpeed = 30,
     FarmDistance = 10, -- Overhead/Below/Behind distance
     AttackDelay = 0.14,
     Noclip = true,
@@ -363,7 +363,7 @@ end
 
 local function getBestDungeon()
     local lvl = LP:FindFirstChild("leaderstats") and LP.leaderstats:FindFirstChild("Level") and LP.leaderstats.Level.Value or 1
-    local dungeons = {"Desert Temple","Winter Outpost","Pirate Island","King's Castle","The Underworld","Samurai Palace","The Canals","Ghastly Harbor","Steampunk Sewers","Orbital Outpost","Volcanic Chambers","Aquatic Temple","Enchanted Forest","Northern Lands","Gilded Skies","Oni Dungeon","Egg Island"}
+    local dungeons = {"Desert Temple","Winter Outpost","Pirate Island","King's Castle","The Underworld","Samurai Palace","The Canals","Ghastly Harbor","Steampunk Sewers","Orbital Outpost","Volcanic Chambers","Aquatic Temple","Enchanted Forest","Northern Lands","Gilded Skies","Oni Dungeon","Egg Island","Krampus"}
     local diffs = {"Nightmare","Insane","Hard","Medium","Easy"}
     local best = {dungeon = "Desert Temple", diff = "Easy", req = -1}
     for _, dName in ipairs(dungeons) do
@@ -782,7 +782,7 @@ AutoCreateToggle:OnChanged(function(v) Config.AutoCreate = v end)
 
 local DungeonDropdown = Tabs.Dungeon:AddDropdown("SelectedDungeon", {
     Title = "Dungeon",
-    Values = {"Desert Temple","Winter Outpost","Pirate Island","King's Castle","The Underworld","Samurai Palace","The Canals","Ghastly Harbor","Steampunk Sewers","Orbital Outpost","Volcanic Chambers","Aquatic Temple","Enchanted Forest","Northern Lands","Gilded Skies","Oni Dungeon","Egg Island"},
+    Values = {"Desert Temple","Winter Outpost","Pirate Island","King's Castle","The Underworld","Samurai Palace","The Canals","Ghastly Harbor","Steampunk Sewers","Orbital Outpost","Volcanic Chambers","Aquatic Temple","Enchanted Forest","Northern Lands","Gilded Skies","Oni Dungeon","Egg Island","Krampus"},
     Multi = false,
     Default = 1,
 })
