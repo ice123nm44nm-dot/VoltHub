@@ -117,7 +117,7 @@ local LP = Players.LocalPlayer
 local Config = {
     AutoFarm = false,
     Position = "Overhead",
-    TweenSpeed = 5,
+    TweenSpeed = 30,
     FarmDistance = 10, -- Overhead/Below/Behind distance
     AttackDelay = 0.14,
     Noclip = true,
@@ -203,7 +203,7 @@ local function tweenTo(cf, speed)
         State.Tween = nil
     end
     local dist = (hrp.Position - cf.Position).Magnitude
-    local duration = math.clamp(dist / math.max(1, speed), 0.05, 6)
+    local duration = dist / math.max(1, speed)
     local tw = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = cf})
     State.Tween = tw
     tw:Play()
@@ -363,7 +363,7 @@ end
 
 local function getBestDungeon()
     local lvl = LP:FindFirstChild("leaderstats") and LP.leaderstats:FindFirstChild("Level") and LP.leaderstats.Level.Value or 1
-    local dungeons = {"Desert Temple","Winter Outpost","Pirate Island","King's Castle","The Underworld","Samurai Palace","The Canals","Ghastly Harbor","Steampunk Sewers","Orbital Outpost","Volcanic Chambers","Aquatic Temple","Enchanted Forest","Northern Lands","Gilded Skies","Oni Dungeon","Egg Island","Krampus"}
+    local dungeons = {"Desert Temple","Winter Outpost","Pirate Island","King's Castle","The Underworld","Samurai Palace","The Canals","Ghastly Harbor","Steampunk Sewers","Orbital Outpost","Volcanic Chambers","Aquatic Temple","Enchanted Forest","Northern Lands","Gilded Skies","Oni Dungeon","Egg Island"}
     local diffs = {"Nightmare","Insane","Hard","Medium","Easy"}
     local best = {dungeon = "Desert Temple", diff = "Easy", req = -1}
     for _, dName in ipairs(dungeons) do
@@ -391,20 +391,7 @@ task.spawn(function()
         if game.PlaceId == 77649408247578 then continue end
         local hrp = getHRP()
         local hum = getHumanoid()
-        if not hrp or not hum then
-            -- ตายแล้วรอเกิดใหม่
-            if not isAlive(LP.Character or workspace:FindFirstChild(LP.Name)) then
-                task.wait(1.5)
-                repeat task.wait(0.5) hrp = getHRP() hum = getHumanoid() until hrp and hum and isAlive(hrp.Parent) or not Config.AutoFarm or Fluent.Unloaded
-                if hum then hum.AutoRotate = false end
-                setNoclip(Config.AutoFarm)
-            end
-            continue
-        end
-        if hum.Health <= 0 then
-            task.wait(1)
-            continue
-        end
+        if not hrp or not hum then continue end
         local target = getClosestMob()
         if not target or not target.Parent then
             task.wait(0.3)
@@ -426,14 +413,10 @@ task.spawn(function()
         local startAtk = tick()
         while Config.AutoFarm and target.Parent and isAlive(target) and thrp.Parent do
             if Fluent.Unloaded then break end
-            -- ถ้าตัวเองตายให้หลุดจากลูปไปรอเกิด
-            hrp = getHRP()
-            hum = getHumanoid()
-            if not hrp or not hum or hum.Health <= 0 or not isAlive(hrp.Parent) then break end
             local curFarm = getFarmCFrame(thrp)
             local dist = (hrp.Position - curFarm.Position).Magnitude
             if dist > 5 then
-                tweenTo(curFarm, Config.TweenSpeed + 15)
+                tweenTo(curFarm, Config.TweenSpeed)
             else
                 -- ล็อคตำแหน่งแบบไม่ก้ม/ไม่กลิ้ง
                 hrp.CFrame = curFarm
@@ -799,7 +782,7 @@ AutoCreateToggle:OnChanged(function(v) Config.AutoCreate = v end)
 
 local DungeonDropdown = Tabs.Dungeon:AddDropdown("SelectedDungeon", {
     Title = "Dungeon",
-    Values = {"Desert Temple","Winter Outpost","Pirate Island","King's Castle","The Underworld","Samurai Palace","The Canals","Ghastly Harbor","Steampunk Sewers","Orbital Outpost","Volcanic Chambers","Aquatic Temple","Enchanted Forest","Northern Lands","Gilded Skies","Oni Dungeon","Egg Island","Krampus"},
+    Values = {"Desert Temple","Winter Outpost","Pirate Island","King's Castle","The Underworld","Samurai Palace","The Canals","Ghastly Harbor","Steampunk Sewers","Orbital Outpost","Volcanic Chambers","Aquatic Temple","Enchanted Forest","Northern Lands","Gilded Skies","Oni Dungeon","Egg Island"},
     Multi = false,
     Default = 1,
 })
