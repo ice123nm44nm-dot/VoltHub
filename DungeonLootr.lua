@@ -17,7 +17,6 @@ task.wait(3)
 
 local Window = Fluent:CreateWindow({
     Title = "VoltScript | Dungeon Lootr",
-    SubTitle = "Auto Farm - Dungeon",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = false,
@@ -1430,10 +1429,6 @@ do
         end
     end)
 
-    Tabs.Dungeon:AddButton({ Title = "Create Now", Callback = function()
-        simulateUICreate(Config.SelectedDungeon, Config.SelectedDifficulty)
-    end})
-
     Tabs.Dungeon:AddSection("Best Dungeon")
 
     Tabs.Dungeon:AddToggle("AutoCreateBestDungeon", { Title = "Auto Create Best Dungeon", Default = false }):OnChanged(function()
@@ -2437,9 +2432,6 @@ do
         end
     end)
 
-    Tabs.BossRaid:AddButton({ Title = "Create Raid Now", Callback = function()
-        simulateRaidCreate(Config.SelectedRaid, Config.SelectedRaidDifficulty)
-    end})
 end
 
 -- Dungeon creation removed per request
