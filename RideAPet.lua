@@ -108,23 +108,34 @@ local function getMyPlot()
 end
 local function getAvailableNestId(plot)
     if not plot then return nil end
+    local eggsFolder = plot:FindFirstChild("Eggs")
+    local maxEggs = 15 -- updated: game now allows 15 eggs stacked (was 5)
+    if eggsFolder and #eggsFolder:GetChildren() >= maxEggs then
+        return nil
+    end
     local nests = plot:FindFirstChild("Nests")
-    if not nests then return nil end
+    if not nests then return "1" end
     for _,nest in ipairs(nests:GetChildren()) do
         if nest:GetAttribute("Unlocked") == true and not nest:GetAttribute("Occupied") then
             return nest.Name
         end
     end
+    -- New: if all Occupied but still capacity (15), stack on any unlocked nest
     for _,nest in ipairs(nests:GetChildren()) do
-        if not nest:GetAttribute("Occupied") then
+        if nest:GetAttribute("Unlocked") == true then
             return nest.Name
         end
     end
-    return nil
+    local first = nests:FindFirstChild("1") or nests:GetChildren()[1]
+    return first and first.Name or nil
 end
 local function getNestPosition(plot)
     if not plot then return nil end
-    return plot.Baseplate.Position + Vector3.new(0,5,0)
+    -- New: randomize slightly inside Plot (75x75) so stacked eggs don't overlap exactly
+    local base = plot.Baseplate.Position
+    local rx = math.random(-15, 15)
+    local rz = math.random(-15, 15)
+    return base + Vector3.new(rx, 5, rz)
 end
 local function getNestModelPosition(plot, nestId)
     if not plot or not nestId then return getNestPosition(plot) end
@@ -145,6 +156,11 @@ local function isOnNest(plot, nestId)
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not hrp or not plot then return false end
     local basePos = plot.Baseplate.Position
+    local rel = hrp.Position - basePos
+    -- New: allow anywhere inside Plot Baseplate (75x75) rather than only near Nest model
+    if math.abs(rel.X) <= 37.5 and math.abs(rel.Z) <= 37.5 and math.abs(rel.Y) <= 20 then
+        return true
+    end
     if (hrp.Position - basePos).Magnitude <= 65 then
         return true
     end
@@ -231,18 +247,24 @@ local function getNearestEgg(list)
 end
 local function getNextEggToolForPlace()
     local eggsData = getEggsData()
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    if not backpack then return nil end
-    for _,tool in ipairs(backpack:GetChildren()) do
-        if tool:IsA("Tool") and tool:HasTag("Egg") then
-            local info = eggsData[tool.Name]
-            local rarity = info and info.Rarity or "Common"
-            if Config.PlaceRarities[rarity] then
-                return tool
+    local function findIn(container)
+        if not container then return nil end
+        for _,tool in ipairs(container:GetChildren()) do
+            if tool:IsA("Tool") and tool:HasTag("Egg") then
+                local info = eggsData[tool.Name]
+                local rarity = info and info.Rarity or "Common"
+                if Config.PlaceRarities[rarity] then
+                    return tool
+                end
             end
         end
+        return nil
     end
-    return nil
+    -- Check Backpack first, then Character (fix: tool already equipped was missed)
+    local t = findIn(LocalPlayer:FindFirstChild("Backpack"))
+    if t then return t end
+    t = findIn(LocalPlayer.Character)
+    return t
 end
 local function startFarm()
     if Farming then return end
@@ -304,7 +326,18 @@ local function startPlace()
                 end
                 local equipped = char and char:FindFirstChildWhichIsA("Tool")
                 if not equipped or not equipped:HasTag("Egg") then return end
-                pcall(function() EggPlaced:FireServer({NestId = nestId}) end)
+                -- Updated: try NestId first, fallback to Position for new anywhere placement
+                local placed = false
+                pcall(function()
+                    EggPlaced:FireServer({NestId = nestId})
+                    placed = true
+                end)
+                if not placed then
+                    pcall(function()
+                        local hrp2 = char and char:FindFirstChild("HumanoidRootPart")
+                        if hrp2 then EggPlaced:FireServer({Position = hrp2.Position}) end
+                    end)
+                end
                 task.wait(0.4)
             end)
             if not ok then warn("[VoltScriptZ] Place error:", err) task.wait(0.5) end
