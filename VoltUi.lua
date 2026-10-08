@@ -40,7 +40,7 @@ Window.__index, Tab.__index, Card.__index = Window, Tab, Card
 
 -- NOTE: Card header Switch is intentionally a VALUE FLAG (Default/Flag/Callback).
 -- It does NOT collapse/expand Body. Body shows automatically when content is added.
--- Kept as-is by design.
+-- Card rounded-corner fix (HeaderBg/HeaderFill + _showBody) kept as-is.
 
 local W, H, SIDEBAR, HEADER, GAP = 740, 532, 168, 54, 13
 local Left, Right, Center = Enum.TextXAlignment.Left, Enum.TextXAlignment.Right, Enum.TextXAlignment.Center
@@ -290,7 +290,7 @@ function Library:CreateWindow(o)
     self.Blocker.MouseButton1Click:Connect(function()
         if self.CloseDropdown then self.CloseDropdown() end
     end)
-    -- auto-close dropdown when window moves or Escape pressed
+    -- auto-close dropdown/popup when window moves
     self:_connect(self.Main:GetPropertyChangedSignal("Position"), function()
         if self.CloseDropdown then self.CloseDropdown() end
     end)
@@ -431,16 +431,12 @@ function Library:Unload()
 end
 
 -- Change accent for FUTURE windows (existing windows keep their colors).
--- Use before CreateWindow: Library:SetTheme({ Accent = Color3.fromRGB(...), AccentLight = ... })
 function Library:SetTheme(t)
-    for k, v in pairs(t or {}) do
-        Theme[k] = v
-    end
+    for k, v in pairs(t or {}) do Theme[k] = v end
     Library.Theme = Theme
 end
 
 -- Simple splash / loading screen. Returns handle with :Close().
--- Library:Loading({ Title = "Volt", Subtitle = "Loading...", Duration = 2 })
 function Library:Loading(o)
     o = o or {}
     local root = GetParent()
@@ -607,8 +603,7 @@ function Window:SaveConfig(name)
     local okEnc, json = pcall(HttpService.JSONEncode, HttpService, data)
     if not okEnc then return false end
     if writefile == nil then return false end
-    local okWrite = pcall(function() writefile(name .. ".json", json) end)
-    return okWrite
+    return pcall(function() writefile(name .. ".json", json) end)
 end
 
 function Window:LoadConfig(name)
@@ -619,7 +614,6 @@ function Window:LoadConfig(name)
     for flag, v in pairs(data) do
         local obj = self.Flags[flag]
         if obj and obj.Set then
-            -- decode keybind: { __enum = "KeyCode.F" } or "F", color: { __color = {r,g,b} }
             if type(v) == "table" and v.__enum then
                 local enumType, enumName = string.match(v.__enum, "^(%w+)%.(%w+)$")
                 if enumType and Enum[enumType] and enumName then
@@ -638,8 +632,7 @@ function Window:LoadConfig(name)
     return true
 end
 
--- Auto-save all flags to file (debounced on change + every 10s backup).
--- Call AFTER creating all UI: Win:EnableAutoSave("VoltScriptZ")
+-- Auto-save all flags (debounced + every 10s backup). Call AFTER creating all UI.
 function Window:EnableAutoSave(name)
     self:DisableAutoSave()
     self._autoSaveName = name
@@ -664,7 +657,6 @@ function Window:EnableAutoSave(name)
             end
         end
     end
-    -- backup loop covers flags created after EnableAutoSave
     task.spawn(function()
         while self._autoSaveName == name do
             task.wait(10)
@@ -688,10 +680,23 @@ function Tab:AddCard(o)
         BorderSizePixel = 0, ClipsDescendants = true, LayoutOrder = self.Order, Parent = col,
     }, { Corner(8), Stroke(Theme.Stroke, 1), New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }) })
 
+    -- Header: ClipsDescendants does NOT follow UICorner, so a square header pokes out of the rounded card.
+    -- Fix: header background has its own rounded corners; a square "fill" covers the bottom half
+    -- (only once the card has a body), so the header is rounded on top and flat where it meets the body.
+    local headerGradient = function()
+        return New("UIGradient", { Color = ColorSequence.new(Color3.fromRGB(32, 23, 62), Color3.fromRGB(22, 16, 43)) })
+    end
     local header = New("Frame", {
-        Size = UDim2.new(1, 0, 0, 49), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, LayoutOrder = 1, Parent = card.Frame,
+        Size = UDim2.new(1, 0, 0, 49), BackgroundTransparency = 1, BorderSizePixel = 0, LayoutOrder = 1, Parent = card.Frame,
     }, {
-        New("UIGradient", { Color = ColorSequence.new(Color3.fromRGB(32, 23, 62), Color3.fromRGB(22, 16, 43)) }),
+        New("Frame", { Name = "HeaderBg", Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 },
+            { Corner(8), headerGradient() }),
+    })
+    card.HeaderFill = New("Frame", {
+        Name = "HeaderFill", Size = UDim2.new(1, 0, 0.5, 0), Position = UDim2.fromScale(0, 0.5),
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Visible = false, Parent = header,
+    }, {
+        headerGradient(),
         New("Frame", { Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1), BackgroundColor3 = Theme.Stroke, BackgroundTransparency = 0.5, BorderSizePixel = 0 }),
     })
     Label({ Text = o.Title, Font = Fonts.Bold, TextSize = 16, Position = UDim2.fromOffset(14, 6), Size = UDim2.new(1, -58, 0, 20), TextTruncate = Enum.TextTruncate.AtEnd, Parent = header })
@@ -710,8 +715,13 @@ function Tab:AddCard(o)
     return card
 end
 
-function Card:_row(height, accentBar)
+function Card:_showBody()
     self.Body.Visible = true
+    self.HeaderFill.Visible = true
+end
+
+function Card:_row(height, accentBar)
+    self:_showBody()
     self.Order = self.Order + 1
     local row = New("Frame", {
         Size = UDim2.new(1, 0, 0, height), BackgroundColor3 = Theme.Row, BorderSizePixel = 0,
@@ -785,14 +795,11 @@ function Card:AddDropdown(o)
     }, { Corner(6), Stroke(Theme.Accent, 1, 0.5), New("UIListLayout", { Padding = UDim.new(0, 2) }), Pad(4, 4, 4, 4) })
 
     local obj = { Multi = isMulti, Value = isMulti and {} or (o.Default or options[1]) }
-    if isMulti and type(o.Default) == "table" then
-        obj.Value = table.clone(o.Default)
-    end
+    if isMulti and type(o.Default) == "table" then obj.Value = table.clone(o.Default) end
     local itemBtns = {}
 
     local function renderLabel()
-        if not isMulti then
-            valLbl.Text = tostring(obj.Value or "")
+        if not isMulti then valLbl.Text = tostring(obj.Value or "")
         else
             if #obj.Value == 0 then valLbl.Text = "None"
             elseif #obj.Value <= 2 then valLbl.Text = table.concat(obj.Value, ", ")
@@ -826,11 +833,8 @@ function Card:AddDropdown(o)
     end
 
     function obj:Set(v, silent)
-        if isMulti then
-            self.Value = type(v) == "table" and table.clone(v) or {}
-        else
-            self.Value = v
-        end
+        if isMulti then self.Value = type(v) == "table" and table.clone(v) or {}
+        else self.Value = v end
         renderLabel()
         paintItems()
         if not silent and o.Callback then task.spawn(o.Callback, self:Get()) end
@@ -852,8 +856,7 @@ function Card:AddDropdown(o)
             end
             self.Value = kept
         else
-            local stillValid = table.find(options, self.Value) ~= nil
-            if not stillValid then self.Value = options[1] end
+            if table.find(options, self.Value) == nil then self.Value = options[1] end
         end
         renderLabel()
         for _, opt in ipairs(options) do
@@ -966,7 +969,7 @@ end
 function Card:AddLabel(textOrOpts)
     -- compat: AddLabel("hello") or AddLabel({ Text = "hello" })
     local text = type(textOrOpts) == "table" and (textOrOpts.Text or "") or tostring(textOrOpts or "")
-    self.Body.Visible = true
+    self:_showBody()
     self.Order = self.Order + 1
     local lbl = Label({
         Text = text, TextSize = 12, TextColor3 = Theme.Para, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top,
@@ -982,7 +985,7 @@ end
 Card.AddParagraph = Card.AddLabel
 
 function Card:AddDivider(text)
-    self.Body.Visible = true
+    self:_showBody()
     self.Order = self.Order + 1
     local holder = New("Frame", {
         Size = UDim2.new(1, 0, 0, text and 18 or 10), BackgroundTransparency = 1,
@@ -1010,7 +1013,7 @@ function Card:AddInfo(o)
 end
 
 function Card:AddButton(o)
-    self.Body.Visible = true
+    self:_showBody()
     self.Order = self.Order + 1
     local b = New("TextButton", {
         Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = Theme.Accent, Text = o.Name, Font = Fonts.Bold,
@@ -1256,9 +1259,9 @@ function Library:Demo()
     Loop:AddCheckbox({ Name = "Auto Back to Lobby", Flag = "AutoLobby" })
     Loop:AddSlider({ Name = "Back to Lobby After", Min = 1, Max = 20, Default = 5, Suffix = "Times", Flag = "LobbyAfter" })
     Loop:AddTextbox({ Name = "Webhook URL", Placeholder = "https://...", Flag = "WebhookURL" })
-    Loop:AddKeybind({ Name = "Farm Key", Default = Enum.KeyCode.F, Flag = "FarmKey", Callback = function(k) print("Farm key", k) end })
+    Loop:AddKeybind({ Name = "Farm Key", Default = Enum.KeyCode.F, Flag = "FarmKey" })
     Loop:AddDivider("Appearance")
-    Loop:AddColorPicker({ Name = "ESP Color", Default = Color3.fromRGB(255, 0, 0), Flag = "ESPColor", Callback = function(c) print("ESP", c) end })
+    Loop:AddColorPicker({ Name = "ESP Color", Default = Color3.fromRGB(255, 0, 0), Flag = "ESPColor" })
     Loop:AddDropdown({ Name = "Target Multi", Options = { "A", "B", "C", "D" }, Multi = true, Default = { "A", "C" }, Flag = "TargetMulti" })
 
     -- settings tab
