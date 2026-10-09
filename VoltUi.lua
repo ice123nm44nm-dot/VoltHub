@@ -1,7 +1,6 @@
---// VoltScriptZ UI v3.3 : complete UI library (no auto demo).
+--// VoltScriptZ UI v3.4 : complete UI library (no auto demo).
 --// Usage: local Library = loadstring(game:HttpGet("..."))()
 --// Then: local Win = Library:CreateWindow({...})  /  Library:Demo() for preview
-print("[VoltScriptZ UI] v3.3 loaded")
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -33,7 +32,7 @@ local Fonts = {
     Bold    = Enum.Font.BuilderSansBold,
 }
 
-local Library = { Theme = Theme, Fonts = Fonts, Version = "v3.3" }
+local Library = { Theme = Theme, Fonts = Fonts, Version = "v3.4" }
 Library.Windows = {}
 local Window, Tab, Card = {}, {}, {}
 Window.__index, Tab.__index, Card.__index = Window, Tab, Card
@@ -116,6 +115,19 @@ local function IsPress(i)
 end
 local function IsMove(i)
     return i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch
+end
+
+local function SanitizeConfigName(name)
+    name = tostring(name or "config")
+    -- strip path traversal / folders, keep only safe chars
+    name = string.gsub(name, "[\\/]", "_")
+    name = string.gsub(name, "%.%.", "_")
+    name = string.gsub(name, "[^%w%-%_ ]", "_")
+    name = string.gsub(name, "^%s+", "")
+    name = string.gsub(name, "%s+$", "")
+    if name == "" then name = "config" end
+    if #name > 64 then name = string.sub(name, 1, 64) end
+    return name
 end
 
 local function Switch(parent, default, callback)
@@ -287,19 +299,33 @@ function Library:CreateWindow(o)
     self.Blocker = New("TextButton", {
         Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", Visible = false, ZIndex = 50, Parent = self.Gui,
     })
-    self.Blocker.MouseButton1Click:Connect(function()
+    local function closeAnyPopup()
         if self.CloseDropdown then self.CloseDropdown() end
+        if self.ClosePopup then self.ClosePopup() end
+    end
+    self._closeAnyPopup = closeAnyPopup
+    self:_connect(self.Blocker.MouseButton1Click, function()
+        closeAnyPopup()
     end)
     -- auto-close dropdown/popup when window moves
     self:_connect(self.Main:GetPropertyChangedSignal("Position"), function()
-        if self.CloseDropdown then self.CloseDropdown() end
+        closeAnyPopup()
     end)
+    -- auto-close on viewport resize
+    local cam = workspace.CurrentCamera
+    if cam then
+        pcall(function()
+            self:_connect(cam:GetPropertyChangedSignal("ViewportSize"), function()
+                closeAnyPopup()
+            end)
+        end)
+    end
 
     -- dragging (header) + close dropdown when drag starts
     local dragging, dragStart, startPos
-    header.InputBegan:Connect(function(i)
+    self:_connect(header.InputBegan, function(i)
         if IsPress(i) then
-            if self.CloseDropdown then self.CloseDropdown() end
+            closeAnyPopup()
             dragging, dragStart, startPos = true, i.Position, self.Main.Position
         end
     end)
@@ -316,7 +342,10 @@ function Library:CreateWindow(o)
     self:_connect(UserInputService.InputBegan, function(i, gp)
         if gp then return end
         if i.KeyCode == self.ToggleKey then self:Toggle() end
-        if i.KeyCode == Enum.KeyCode.Escape and self.CloseDropdown then self.CloseDropdown() end
+        if i.KeyCode == Enum.KeyCode.Escape then
+            if self.CloseDropdown then self.CloseDropdown() end
+            if self.ClosePopup then self.ClosePopup() end
+        end
     end)
 
     self:_animate(true)
@@ -371,16 +400,26 @@ function Window:Close()
     if self.Closing then return end
     self.Closing = true
     if self.CloseDropdown then self.CloseDropdown() end
+    if self.ClosePopup then self.ClosePopup() end
     local t = Tween(self.UIScale, { Scale = self.BaseScale * 0.9 }, 0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
     t.Completed:Connect(function() self:Destroy() end)
 end
 
 function Window:Destroy()
-    for _, c in ipairs(self.Connections) do c:Disconnect() end
+    self:DisableAutoSave()
+    self.AnimToken = (self.AnimToken or 0) + 1
+    self.CloseDropdown = nil
+    self.ClosePopup = nil
+    for _, c in ipairs(self.Connections) do
+        pcall(function() c:Disconnect() end)
+    end
+    table.clear(self.Connections)
     for i, w in ipairs(Library.Windows) do
         if w == self then table.remove(Library.Windows, i) break end
     end
-    self.Gui:Destroy()
+    if self.Gui then
+        pcall(function() self.Gui:Destroy() end)
+    end
 end
 
 function Window:SetToggleKey(key)
@@ -398,27 +437,42 @@ function Window:SetFlag(flag, value)
     if obj and obj.Set then obj:Set(value) end
 end
 
--- simple toast notification (top-right of window, auto fade)
+-- toast notification (bottom-right of screen, auto fade)
 function Window:Notify(o)
     o = type(o) == "table" and o or { Text = tostring(o) }
-    local holder = self.Main:FindFirstChild("NotifyHolder")
+    local holder = self.Gui:FindFirstChild("NotifyHolder")
     if not holder then
         holder = New("Frame", {
-            Name = "NotifyHolder", Size = UDim2.new(0, 240, 1, 0), AnchorPoint = Vector2.new(1, 0),
-            Position = UDim2.new(1, -10, 0, 64), BackgroundTransparency = 1, ZIndex = 100, Parent = self.Main,
-        }, { New("UIListLayout", { Padding = UDim.new(0, 8), VerticalAlignment = Enum.VerticalAlignment.Top }) })
+            Name = "NotifyHolder", Size = UDim2.new(0, 260, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -16, 1, -16),
+            BackgroundTransparency = 1, ZIndex = 100, Parent = self.Gui,
+        }, { New("UIListLayout", { Padding = UDim.new(0, 8), VerticalAlignment = Enum.VerticalAlignment.Bottom, SortOrder = Enum.SortOrder.LayoutOrder }) })
     end
+    self._notifyOrder = (self._notifyOrder or 0) + 1
     local n = New("Frame", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Theme.CardHeader,
-        BorderSizePixel = 0, ZIndex = 101, Parent = holder,
+        BorderSizePixel = 0, ZIndex = 101, LayoutOrder = self._notifyOrder, Parent = holder,
     }, { Corner(8), Stroke(Theme.Accent, 1, 0.4), Pad(10, 10, 10, 10) })
     Label({ Text = o.Title or "Notice", Font = Fonts.Bold, TextSize = 13, Size = UDim2.new(1, 0, 0, 16), ZIndex = 102, Parent = n })
     Label({ Text = o.Text or "", TextSize = 12, TextColor3 = Theme.Para, TextWrapped = true,
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 102, Parent = n })
     task.delay(o.Duration or 3, function()
         if n.Parent then
-            local t = Tween(n, { BackgroundTransparency = 1 }, 0.3)
-            t.Completed:Connect(function() n:Destroy() end)
+            Tween(n, { BackgroundTransparency = 1 }, 0.3)
+            for _, d in ipairs(n:GetDescendants()) do
+                if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+                    Tween(d, { TextTransparency = 1, BackgroundTransparency = 1 }, 0.3)
+                elseif d:IsA("UIStroke") then
+                    Tween(d, { Transparency = 1 }, 0.3)
+                elseif d:IsA("Frame") then
+                    pcall(function() Tween(d, { BackgroundTransparency = 1 }, 0.3) end)
+                end
+            end
+            local stroke = n:FindFirstChildOfClass("UIStroke")
+            if stroke then Tween(stroke, { Transparency = 1 }, 0.3) end
+            task.delay(0.32, function()
+                if n.Parent then n:Destroy() end
+            end)
         end
     end)
     return n
@@ -452,8 +506,19 @@ function Library:Loading(o)
     local handle = {}
     function handle:Close()
         if gui.Parent then
-            local t = Tween(bg, { BackgroundTransparency = 1 }, 0.25)
-            t.Completed:Connect(function() gui:Destroy() end)
+            Tween(bg, { BackgroundTransparency = 1 }, 0.25)
+            for _, d in ipairs(bg:GetDescendants()) do
+                if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+                    Tween(d, { TextTransparency = 1, BackgroundTransparency = 1 }, 0.25)
+                elseif d:IsA("UIStroke") then
+                    Tween(d, { Transparency = 1 }, 0.25)
+                elseif d:IsA("Frame") then
+                    pcall(function() Tween(d, { BackgroundTransparency = 1 }, 0.25) end)
+                end
+            end
+            task.delay(0.27, function()
+                if gui.Parent then gui:Destroy() end
+            end)
         end
     end
     if o.Duration then task.delay(o.Duration + 0.15, function() handle:Close() end) end
@@ -497,11 +562,11 @@ function Window:AddTab(o)
     tab.Label = Label({ Text = o.Name, Font = Fonts.Medium, TextSize = 14, Position = UDim2.fromOffset(16, 0),
         Size = UDim2.new(1, -22, 1, 0), ZIndex = 3, Parent = tab.Button })
 
-    tab.Button.MouseEnter:Connect(function()
+    self:_connect(tab.Button.MouseEnter, function()
         if self.Current ~= tab then Tween(tab.Button, { BackgroundTransparency = 0.6 }) end
     end)
-    tab.Button.MouseLeave:Connect(function() Tween(tab.Button, { BackgroundTransparency = 1 }) end)
-    tab.Button.MouseButton1Click:Connect(function() self:SelectTab(tab) end)
+    self:_connect(tab.Button.MouseLeave, function() Tween(tab.Button, { BackgroundTransparency = 1 }) end)
+    self:_connect(tab.Button.MouseButton1Click, function() self:SelectTab(tab) end)
 
     tab.Group = New("CanvasGroup", {
         Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0,
@@ -528,6 +593,12 @@ function Window:AddTab(o)
     end
     tab.Order = 0
 
+    -- close dropdown/popup when this tab scrolls (prevents floating misalignment)
+    self:_connect(tab.Page:GetPropertyChangedSignal("CanvasPosition"), function()
+        if self.CloseDropdown then self.CloseDropdown() end
+        if self.ClosePopup then self.ClosePopup() end
+    end)
+
     table.insert(self.Tabs, tab)
     if not self.Current then self:SelectTab(tab, true) end
     return tab
@@ -553,6 +624,7 @@ end
 function Window:SelectTab(tab, instant)
     if self.Current == tab then return end
     if self.CloseDropdown then self.CloseDropdown() end
+    if self.ClosePopup then self.ClosePopup() end
     local old = self.Current
     self.Current = tab
 
@@ -587,16 +659,26 @@ function Window:SelectTab(tab, instant)
 end
 
 function Window:SaveConfig(name)
+    name = SanitizeConfigName(name)
     local data = {}
     for flag, obj in pairs(self.Flags) do
-        local ok, v = pcall(function() return obj:Get() end)
-        if ok then
-            if typeof(v) == "EnumItem" then
-                data[flag] = { __enum = v.EnumType.Name .. "." .. v.Name }
-            elseif typeof(v) == "Color3" then
-                data[flag] = { __color = { math.floor(v.R * 255 + 0.5), math.floor(v.G * 255 + 0.5), math.floor(v.B * 255 + 0.5) } }
-            else
-                data[flag] = v
+        -- keybind with mode: save key + mode together
+        if type(obj.Mode) == "string" and type(obj.GetMode) == "function" then
+            local ok, v = pcall(function() return obj:Get() end)
+            if ok then
+                local keyStr = (typeof(v) == "EnumItem") and (v.EnumType.Name .. "." .. v.Name) or nil
+                data[flag] = { __keybind = { key = keyStr, mode = obj:GetMode() } }
+            end
+        else
+            local ok, v = pcall(function() return obj:Get() end)
+            if ok then
+                if typeof(v) == "EnumItem" then
+                    data[flag] = { __enum = v.EnumType.Name .. "." .. v.Name }
+                elseif typeof(v) == "Color3" then
+                    data[flag] = { __color = { math.floor(v.R * 255 + 0.5), math.floor(v.G * 255 + 0.5), math.floor(v.B * 255 + 0.5) } }
+                else
+                    data[flag] = v
+                end
             end
         end
     end
@@ -606,7 +688,27 @@ function Window:SaveConfig(name)
     return pcall(function() writefile(name .. ".json", json) end)
 end
 
+function Window:ListConfigs()
+    if listfiles == nil then return {} end
+    local ok, files = pcall(listfiles, "")
+    if not ok or type(files) ~= "table" then return {} end
+    local out = {}
+    for _, f in ipairs(files) do
+        local base = string.match(tostring(f), "([^\\/]+)%.json$")
+        if base then table.insert(out, base) end
+    end
+    table.sort(out)
+    return out
+end
+
+function Window:DeleteConfig(name)
+    name = SanitizeConfigName(name)
+    if delfile == nil then return false end
+    return pcall(function() delfile(name .. ".json") end)
+end
+
 function Window:LoadConfig(name)
+    name = SanitizeConfigName(name)
     local ok, raw = pcall(readfile, name .. ".json")
     if not ok then return false end
     local okDecode, data = pcall(HttpService.JSONDecode, HttpService, raw)
@@ -614,7 +716,20 @@ function Window:LoadConfig(name)
     for flag, v in pairs(data) do
         local obj = self.Flags[flag]
         if obj and obj.Set then
-            if type(v) == "table" and v.__enum then
+            if type(v) == "table" and v.__keybind then
+                local kb = v.__keybind
+                if kb.key then
+                    local enumType, enumName = string.match(kb.key, "^(%w+)%.(%w+)$")
+                    if enumType and Enum[enumType] and enumName then
+                        pcall(function() obj:Set(Enum[enumType][enumName], true) end)
+                    end
+                else
+                    pcall(function() obj:Set(nil, true) end)
+                end
+                if kb.mode and type(obj.SetMode) == "function" then
+                    pcall(function() obj:SetMode(kb.mode, true) end)
+                end
+            elseif type(v) == "table" and v.__enum then
                 local enumType, enumName = string.match(v.__enum, "^(%w+)%.(%w+)$")
                 if enumType and Enum[enumType] and enumName then
                     pcall(function() obj:Set(Enum[enumType][enumName], true) end)
@@ -633,45 +748,79 @@ function Window:LoadConfig(name)
 end
 
 -- Auto-save all flags (debounced + every 10s backup). Call AFTER creating all UI.
-function Window:EnableAutoSave(name)
+-- opts: { AutoLoad = true } to load on enable (default true for backward-compat)
+function Window:EnableAutoSave(name, opts)
+    name = SanitizeConfigName(name)
+    opts = opts or {}
+    local autoLoad = opts.AutoLoad
+    if autoLoad == nil then autoLoad = true end
     self:DisableAutoSave()
+    self._autoSaveToken = (self._autoSaveToken or 0) + 1
+    local myToken = self._autoSaveToken
     self._autoSaveName = name
-    if readfile ~= nil then self:LoadConfig(name) end
+    if autoLoad and readfile ~= nil then self:LoadConfig(name) end
     self._autoSaveTimer = nil
     local function schedule()
         if self._autoSaveTimer then return end
         self._autoSaveTimer = true
         task.delay(1, function()
             self._autoSaveTimer = nil
-            if self._autoSaveName then self:SaveConfig(name) end
+            if self._autoSaveToken == myToken and self._autoSaveName then
+                pcall(function() self:SaveConfig(name) end)
+            end
         end)
     end
     for _, obj in pairs(self.Flags) do
         if not obj._autoHooked then
             obj._autoHooked = true
             local origSet = obj.Set
-            obj.Set = function(s, v, silent)
-                local r = origSet(s, v, silent)
-                if not silent then schedule() end
-                return r
+            -- supports both obj:Set(v) and obj.Set(v) call styles
+            obj.Set = function(a, b, c)
+                if rawequal(a, obj) then
+                    local r = origSet(a, b, c)
+                    if not c then schedule() end
+                    return r
+                else
+                    local r = origSet(obj, a, b)
+                    if not b then schedule() end
+                    return r
+                end
+            end
+            -- keybind mode changes should also trigger autosave
+            if type(obj.SetMode) == "function" then
+                local origMode = obj.SetMode
+                obj.SetMode = function(a, b, c)
+                    local selfObj, m, sil
+                    if rawequal(a, obj) then selfObj, m, sil = a, b, c
+                    else selfObj, m, sil = obj, a, b end
+                    local r = origMode(selfObj, m, sil)
+                    if not sil then schedule() end
+                    return r
+                end
             end
         end
     end
     task.spawn(function()
-        while self._autoSaveName == name do
+        while self._autoSaveToken == myToken and self._autoSaveName == name do
             task.wait(10)
-            if self._autoSaveName == name then pcall(function() self:SaveConfig(name) end) end
+            if self._autoSaveToken == myToken and self._autoSaveName == name then
+                pcall(function() self:SaveConfig(name) end)
+            end
         end
     end)
 end
 
 function Window:DisableAutoSave()
+    self._autoSaveToken = (self._autoSaveToken or 0) + 1
     self._autoSaveName = nil
+    self._autoSaveTimer = nil
 end
 
 ---------------------------------------------------------------- card
 function Tab:AddCard(o)
-    local col = self.Columns[o.Column or 1]
+    o = o or {}
+    local colIdx = math.clamp(math.floor(tonumber(o.Column) or 1), 1, 2)
+    local col = self.Columns[colIdx]
     self.Order = self.Order + 1
     local card = setmetatable({ Window = self.Window, Order = 0 }, Card)
 
@@ -782,7 +931,7 @@ function Card:AddDropdown(o)
     Label({ Text = o.Name, Position = UDim2.fromOffset(12, 0), Size = UDim2.new(0.4, 0, 1, 0), Parent = row })
 
     local box = New("TextButton", {
-        Size = UDim2.new(0.6, 0, 0, 24), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0),
+        Size = UDim2.new(0.6, 0, 0, 24), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
         BackgroundColor3 = Theme.Window, Text = "", AutoButtonColor = false, Parent = row,
     }, { Corner(5), Stroke(Theme.Stroke, 1) })
     local valLbl = Label({ Text = "", TextSize = 13, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -30, 1, 0), TextTruncate = Enum.TextTruncate.AtEnd, Parent = box })
@@ -796,20 +945,29 @@ function Card:AddDropdown(o)
 
     local obj = { Multi = isMulti, Value = isMulti and {} or (o.Default or options[1]) }
     if isMulti and type(o.Default) == "table" then obj.Value = table.clone(o.Default) end
-    local itemBtns = {}
+    local itemRows = {}
 
     local function renderLabel()
-        if not isMulti then valLbl.Text = tostring(obj.Value or "")
+        if not isMulti then
+            if obj.Value == nil or (#options > 0 and table.find(options, obj.Value) == nil and #options == 0) then
+                valLbl.Text = (#options == 0) and "No options" or tostring(obj.Value or "")
+            else
+                valLbl.Text = tostring(obj.Value or "")
+            end
+            if #options == 0 then valLbl.Text = "No options" end
         else
-            if #obj.Value == 0 then valLbl.Text = "None"
+            if #obj.Value == 0 then valLbl.Text = (#options == 0) and "No options" or "None"
             elseif #obj.Value <= 2 then valLbl.Text = table.concat(obj.Value, ", ")
             else valLbl.Text = string.format("%d selected", #obj.Value) end
         end
     end
     local function paintItems()
-        for opt, b in pairs(itemBtns) do
-            local selected = isMulti and table.find(obj.Value, opt) ~= nil or (not isMulti and obj.Value == opt)
-            b.BackgroundTransparency = selected and 0.6 or 1
+        for _, row in ipairs(itemRows) do
+            local opt, b = row.opt, row.btn
+            if b and b.Parent then
+                local selected = isMulti and table.find(obj.Value, opt) ~= nil or (not isMulti and obj.Value == opt)
+                b.BackgroundTransparency = selected and 0.6 or 1
+            end
         end
     end
     renderLabel()
@@ -824,8 +982,14 @@ function Card:AddDropdown(o)
         if window.CloseDropdown then window.CloseDropdown() end
         if window.ClosePopup then window.ClosePopup() end
         local ap, as = box.AbsolutePosition, box.AbsoluteSize
-        list.Position = UDim2.fromOffset(ap.X, ap.Y + as.Y + 4)
-        list.Size = UDim2.fromOffset(as.X, math.min(#options * 26 + 8, 140))
+        local cam = workspace.CurrentCamera
+        local vs = cam and cam.ViewportSize or Vector2.new(1280, 800)
+        local h = (#options == 0) and 32 or math.min(#options * 26 + 8, 140)
+        local x = math.max(math.min(ap.X, vs.X - as.X - 10), 10)
+        local y = ap.Y + as.Y + 4
+        y = math.max(10, math.min(y, vs.Y - h - 10))
+        list.Position = UDim2.fromOffset(x, y)
+        list.Size = UDim2.fromOffset(as.X, h)
         list.Visible = true
         window.Blocker.Visible = true
         window.CloseDropdown = close
@@ -848,7 +1012,7 @@ function Card:AddDropdown(o)
         for _, c in ipairs(list:GetChildren()) do
             if c:IsA("TextButton") then c:Destroy() end
         end
-        table.clear(itemBtns)
+        table.clear(itemRows)
         if isMulti then
             local kept = {}
             for _, v in ipairs(self.Value) do
@@ -859,13 +1023,21 @@ function Card:AddDropdown(o)
             if table.find(options, self.Value) == nil then self.Value = options[1] end
         end
         renderLabel()
+        if #options == 0 then
+            local empty = New("TextLabel", {
+                Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
+                Text = "No options", Font = Fonts.Medium, TextSize = 12, TextColor3 = Theme.Muted,
+                ZIndex = 61, Parent = list,
+            })
+            table.insert(itemRows, { opt = nil, btn = empty })
+        end
         for _, opt in ipairs(options) do
             local b = New("TextButton", {
                 Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = Theme.Accent, BackgroundTransparency = 1,
                 Text = tostring(opt), Font = Fonts.Medium, TextSize = 13, TextColor3 = Theme.Text,
                 AutoButtonColor = false, ZIndex = 61, Parent = list,
             }, { Corner(4) })
-            itemBtns[opt] = b
+            table.insert(itemRows, { opt = opt, btn = b })
             b.MouseEnter:Connect(function() if b.BackgroundTransparency == 1 then Tween(b, { BackgroundTransparency = 0.85 }, 0.1) end end)
             b.MouseLeave:Connect(function() paintItems() end)
             b.MouseButton1Click:Connect(function()
@@ -996,8 +1168,12 @@ function Card:AddDivider(text)
         BackgroundColor3 = Theme.Stroke, BorderSizePixel = 0, Parent = holder,
     })
     if text then
-        Label({ Text = tostring(text), TextSize = 11, TextColor3 = Theme.SubText, TextXAlignment = Center,
-            Size = UDim2.fromScale(1, 1), Parent = holder })
+        local pill = Label({ Text = tostring(text), TextSize = 11, TextColor3 = Theme.SubText, TextXAlignment = Center,
+            Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = Theme.Card,
+            BorderSizePixel = 0, Parent = holder })
+        pill.AnchorPoint = Vector2.new(0.5, 0.5)
+        pill.Position = UDim2.fromScale(0.5, 0.5)
+        Pad(0, 8, 0, 8).Parent = pill
     end
 end
 
@@ -1034,12 +1210,13 @@ end
 function Card:AddTextbox(o)
     o = o or {}
     local row = self:_row(29)
-    Label({ Text = o.Name or "Input", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(0.4, 0, 1, 0), Parent = row })
+    Label({ Text = o.Name or "Input", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(0.4, 0, 1, 0),
+        TextTruncate = Enum.TextTruncate.AtEnd, Parent = row })
     local box = New("TextBox", {
         Size = UDim2.new(0.6, 0, 0, 24), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0),
         BackgroundColor3 = Theme.Window, Text = tostring(o.Default or ""), PlaceholderText = o.Placeholder or "",
         Font = Fonts.Medium, TextSize = 13, TextColor3 = Theme.Text, PlaceholderColor3 = Theme.Muted,
-        ClearTextOnFocus = false, Parent = row,
+        TextXAlignment = Left, ClearTextOnFocus = false, Parent = row,
     }, { Corner(5), Stroke(Theme.Stroke, 1) })
     local obj = { Value = tostring(o.Default or "") }
     function obj:Set(v, silent)
@@ -1059,31 +1236,99 @@ end
 function Card:AddKeybind(o)
     o = o or {}
     local row = self:_row(28)
-    Label({ Text = o.Name or "Keybind", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -80, 1, 0), Parent = row })
+    Label({ Text = o.Name or "Keybind", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -130, 1, 0), Parent = row })
+    local modeBtn = New("TextButton", {
+        Size = UDim2.fromOffset(48, 20), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -78, 0.5, 0),
+        BackgroundColor3 = Theme.Window, Text = o.Mode or "Toggle",
+        Font = Fonts.Medium, TextSize = 11, TextColor3 = Theme.SubText, AutoButtonColor = false, Parent = row,
+    }, { Corner(5), Stroke(Theme.Stroke, 1) })
     local keyBtn = New("TextButton", {
         Size = UDim2.fromOffset(60, 20), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
         BackgroundColor3 = Theme.Window, Text = (o.Default and o.Default.Name) or "None",
         Font = Fonts.Medium, TextSize = 12, TextColor3 = Theme.AccentLight, AutoButtonColor = false, Parent = row,
     }, { Corner(5), Stroke(Theme.Stroke, 1) })
-    local obj = { Value = o.Default, Listening = false }
+    local modes = { "Toggle", "Hold", "Always" }
+    local obj = { Value = o.Default, Mode = o.Mode or "Toggle", State = false, Listening = false }
+    if table.find(modes, obj.Mode) == nil then obj.Mode = "Toggle" end
+    modeBtn.Text = obj.Mode
     function obj:Set(v, silent)
         self.Value = v
         keyBtn.Text = (v and v.Name) or "None"
-        if not silent and o.Callback then task.spawn(o.Callback, v) end
+        if self.Mode == "Always" and v ~= nil then
+            self.State = true
+            if not silent and o.Callback then task.spawn(o.Callback, v, true) end
+        elseif not silent and o.Callback and v ~= nil and self.Mode == "Toggle" then
+            -- keep backward-compat: single press fires with key; state available as 2nd arg
+        end
+        if not silent and o.Callback and self.Mode ~= "Hold" and self.Mode ~= "Always" and v == nil then
+            task.spawn(o.Callback, v, self.State)
+        end
     end
     function obj:Get() return self.Value end
+    function obj:GetMode() return self.Mode end
+    function obj:GetState() return self.State end
+    function obj:SetMode(m, silent)
+        if table.find(modes, m) == nil then return end
+        self.Mode = m
+        modeBtn.Text = m
+        if m == "Always" then
+            self.State = true
+            if not silent and o.Callback and self.Value ~= nil then
+                task.spawn(o.Callback, self.Value, true)
+            end
+        elseif m == "Toggle" or m == "Hold" then
+            self.State = false
+        end
+    end
     keyBtn.MouseButton1Click:Connect(function()
         obj.Listening = true
         keyBtn.Text = "..."
     end)
+    modeBtn.MouseButton1Click:Connect(function()
+        local idx = table.find(modes, obj.Mode) or 1
+        obj:SetMode(modes[(idx % #modes) + 1])
+    end)
     self.Window:_connect(UserInputService.InputBegan, function(i, gp)
         if obj.Listening and not gp and i.KeyCode ~= Enum.KeyCode.Unknown then
+            -- Escape cancels listening instead of binding; RightControl conflict guard
+            if i.KeyCode == Enum.KeyCode.Escape then
+                obj.Listening = false
+                keyBtn.Text = (obj.Value and obj.Value.Name) or "None"
+                return
+            end
             obj.Listening = false
-            obj:Set(i.KeyCode)
+            keyBtn.Text = i.KeyCode.Name
+            obj.Value = i.KeyCode
+            if obj.Mode == "Always" then
+                obj.State = true
+                if o.Callback then task.spawn(o.Callback, obj.Value, true) end
+            elseif obj.Mode == "Hold" then
+                obj.State = true
+                if o.Callback then task.spawn(o.Callback, obj.Value, true) end
+            else -- Toggle
+                obj.State = not obj.State
+                if o.Callback then task.spawn(o.Callback, obj.Value, obj.State) end
+            end
             return
         end
         if not obj.Listening and obj.Value and i.KeyCode == obj.Value and not gp then
-            if o.Callback then task.spawn(o.Callback, obj.Value) end
+            if obj.Mode == "Hold" then
+                obj.State = true
+                if o.Callback then task.spawn(o.Callback, obj.Value, true) end
+            elseif obj.Mode == "Always" then
+                if o.Callback then task.spawn(o.Callback, obj.Value, true) end
+            else
+                obj.State = not obj.State
+                if o.Callback then task.spawn(o.Callback, obj.Value, obj.State) end
+            end
+        end
+    end)
+    self.Window:_connect(UserInputService.InputEnded, function(i)
+        if obj.Mode == "Hold" and obj.Value and i.KeyCode == obj.Value then
+            if obj.State then
+                obj.State = false
+                if o.Callback then task.spawn(o.Callback, obj.Value, false) end
+            end
         end
     end)
     if o.Flag then self.Window.Flags[o.Flag] = obj end
@@ -1195,8 +1440,13 @@ function Card:AddColorPicker(o)
         if window.CloseDropdown then window.CloseDropdown() end
         if window.ClosePopup then window.ClosePopup() end
         local ap, as = preview.AbsolutePosition, preview.AbsoluteSize
-        local x = math.min(ap.X - 210 + as.X, (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.X or 1280) - 220)
-        popup.Position = UDim2.fromOffset(math.max(x, 10), ap.Y + as.Y + 4)
+        local cam = workspace.CurrentCamera
+        local vs = cam and cam.ViewportSize or Vector2.new(1280, 800)
+        local pw, ph = 210, 196
+        local x = math.min(ap.X - pw + as.X, vs.X - pw - 10)
+        local y = ap.Y + as.Y + 4
+        y = math.max(10, math.min(y, vs.Y - ph - 10))
+        popup.Position = UDim2.fromOffset(math.max(x, 10), y)
         popup.Visible = true
         window.Blocker.Visible = true
         window.ClosePopup = close
@@ -1207,6 +1457,104 @@ function Card:AddColorPicker(o)
     end)
     if o.Flag then window.Flags[o.Flag] = obj end
     return obj
+end
+
+-- Multi-config UI: textbox + Save/Load/Delete + dropdown list + autoload toggle.
+-- o = { Default = "default", AutoLoad = true }
+function Card:AddConfigBox(o)
+    o = o or {}
+    local window = self.Window
+    local current = o.Default or "default"
+
+    local nameBox = self:AddTextbox({ Name = "Config Name", Default = current, Placeholder = "my-config" })
+    local list = self:AddDropdown({ Name = "Saved", Options = {}, Default = nil })
+    local autoObj = self:AddToggle({ Name = "Autoload + Autosave", Default = o.AutoLoad ~= false })
+
+    local function refreshList(select)
+        local names = window:ListConfigs()
+        if #names == 0 then names = { "(no configs)" } end
+        list:Refresh(names)
+        if select then
+            if table.find(names, select) then list:Set(select, true)
+            else list:Set(names[1], true) end
+        end
+        return names
+    end
+    refreshList(current)
+
+    local function chosenName()
+        local v = nameBox:Get()
+        if v == nil or tostring(v) == "" then
+            v = list:Get()
+            if v == "(no configs)" then v = current end
+        end
+        return tostring(v)
+    end
+
+    self:AddButton({ Name = "Save", Callback = function()
+        local n = chosenName()
+        current = n
+        window:SaveConfig(n)
+        refreshList(n)
+        window:Notify({ Title = "Config", Text = "Saved: " .. n })
+    end })
+    self:AddButton({ Name = "Load", Callback = function()
+        local n = chosenName()
+        current = n
+        if window:LoadConfig(n) then
+            refreshList(n)
+            window:Notify({ Title = "Config", Text = "Loaded: " .. n })
+        else
+            window:Notify({ Title = "Config", Text = "Not found: " .. n })
+        end
+    end })
+    self:AddButton({ Name = "Delete", Callback = function()
+        local n = chosenName()
+        window:DeleteConfig(n)
+        refreshList()
+        window:Notify({ Title = "Config", Text = "Deleted: " .. n })
+    end })
+    self:AddButton({ Name = "Enable Autosave", Callback = function()
+        local n = chosenName()
+        window:EnableAutoSave(n)
+        window:Notify({ Title = "Config", Text = "Autosave on: " .. n })
+    end })
+
+    -- keep textbox in sync when picking from the list (no polling loop)
+    do
+        local origSet = list.Set
+        list.Set = function(s, v, silent)
+            local selfObj, val, sil
+            if rawequal(s, list) then selfObj, val, sil = s, v, silent
+            else selfObj, val, sil = list, s, v end
+            local r = origSet(selfObj, val, sil)
+            if val ~= nil and val ~= "(no configs)" then
+                pcall(function() nameBox:Set(tostring(val), true) end)
+                current = tostring(val)
+            end
+            return r
+        end
+    end
+    -- autoload toggle: on -> EnableAutoSave(current), off -> DisableAutoSave()
+    do
+        local origSet = autoObj.Set
+        autoObj.Set = function(s, v, silent)
+            local selfObj, val, sil
+            if rawequal(s, autoObj) then selfObj, val, sil = s, v, silent
+            else selfObj, val, sil = autoObj, s, v end
+            local r = origSet(selfObj, val, sil)
+            if not sil then
+                if val then window:EnableAutoSave(chosenName())
+                else window:DisableAutoSave() end
+            end
+            return r
+        end
+    end
+
+    if autoObj:Get() then
+        window:EnableAutoSave(current, { AutoLoad = true })
+    end
+    return { NameBox = nameBox, List = list, Refresh = refreshList }
 end
 
 ---------------------------------------------------------------- demo / example (call manually, no auto-run)
@@ -1259,17 +1607,16 @@ function Library:Demo()
     Loop:AddCheckbox({ Name = "Auto Back to Lobby", Flag = "AutoLobby" })
     Loop:AddSlider({ Name = "Back to Lobby After", Min = 1, Max = 20, Default = 5, Suffix = "Times", Flag = "LobbyAfter" })
     Loop:AddTextbox({ Name = "Webhook URL", Placeholder = "https://...", Flag = "WebhookURL" })
-    Loop:AddKeybind({ Name = "Farm Key", Default = Enum.KeyCode.F, Flag = "FarmKey" })
+    Loop:AddKeybind({ Name = "Farm Key", Default = Enum.KeyCode.F, Mode = "Toggle", Flag = "FarmKey", Callback = function(key, state) print("Farm Key", key, state) end })
+    Loop:AddKeybind({ Name = "Hold Key", Default = Enum.KeyCode.G, Mode = "Hold", Flag = "HoldKey", Callback = function(key, held) print("Hold", key, held) end })
     Loop:AddDivider("Appearance")
     Loop:AddColorPicker({ Name = "ESP Color", Default = Color3.fromRGB(255, 0, 0), Flag = "ESPColor" })
     Loop:AddDropdown({ Name = "Target Multi", Options = { "A", "B", "C", "D" }, Multi = true, Default = { "A", "C" }, Flag = "TargetMulti" })
 
     -- settings tab
     local Cfg = Settings:AddCard({ Title = "Config", Subtitle = "Save and load your settings", Column = 1, Toggle = false })
-    Cfg:AddButton({ Name = "Save Config", Callback = function() Win:SaveConfig("VoltScriptZ") end })
-    Cfg:AddButton({ Name = "Load Config", Callback = function() Win:LoadConfig("VoltScriptZ") end })
-    Cfg:AddButton({ Name = "Enable AutoSave", Callback = function() Win:EnableAutoSave("VoltScriptZ") end })
-    Cfg:AddButton({ Name = "Test Notify", Callback = function() Win:Notify({ Title = "VoltScriptZ", Text = "Library v3.3 ready!" }) end })
+    Cfg:AddConfigBox({ Default = "VoltScriptZ", AutoLoad = false })
+    Cfg:AddButton({ Name = "Test Notify", Callback = function() Win:Notify({ Title = "VoltScriptZ", Text = "Library v3.4 ready!" }) end })
 
     return Win
 end
