@@ -1,4 +1,4 @@
---// VoltScriptZ UI v3.4 : complete UI library (no auto demo).
+--// VoltScriptZ UI v3.5 : complete UI library (no auto demo).
 --// Usage: local Library = loadstring(game:HttpGet("..."))()
 --// Then: local Win = Library:CreateWindow({...})  /  Library:Demo() for preview
 local Players = game:GetService("Players")
@@ -32,7 +32,7 @@ local Fonts = {
     Bold    = Enum.Font.BuilderSansBold,
 }
 
-local Library = { Theme = Theme, Fonts = Fonts, Version = "v3.4" }
+local Library = { Theme = Theme, Fonts = Fonts, Version = "v3.5" }
 Library.Windows = {}
 local Window, Tab, Card = {}, {}, {}
 Window.__index, Tab.__index, Card.__index = Window, Tab, Card
@@ -1653,7 +1653,7 @@ function Library:Demo()
     -- settings tab
     local Cfg = Settings:AddCard({ Title = "Config", Subtitle = "Save and load your settings", Column = 1, Toggle = false })
     Cfg:AddConfigBox({ Default = "VoltScriptZ", AutoLoad = false })
-    Cfg:AddButton({ Name = "Test Notify", Callback = function() Win:Notify({ Title = "VoltScriptZ", Text = "Library v3.4 ready!" }) end })
+    Cfg:AddButton({ Name = "Test Notify", Callback = function() Win:Notify({ Title = "VoltScriptZ", Text = "Library v3.5 ready!" }) end })
 
     return Win
 end
