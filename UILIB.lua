@@ -931,7 +931,7 @@ function Card:AddDropdown(o)
     Label({ Text = o.Name, Position = UDim2.fromOffset(12, 0), Size = UDim2.new(0.4, 0, 1, 0), Parent = row })
 
     local box = New("TextButton", {
-        Size = UDim2.new(0.6, 0, 0, 24), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0),
+        Size = UDim2.new(0.6, 0, 0, 24), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
         BackgroundColor3 = Theme.Window, Text = "", AutoButtonColor = false, Parent = row,
     }, { Corner(5), Stroke(Theme.Stroke, 1) })
     local valLbl = Label({ Text = "", TextSize = 13, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -30, 1, 0), TextTruncate = Enum.TextTruncate.AtEnd, Parent = box })
@@ -1210,12 +1210,13 @@ end
 function Card:AddTextbox(o)
     o = o or {}
     local row = self:_row(29)
-    Label({ Text = o.Name or "Input", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(0.4, 0, 1, 0), Parent = row })
+    Label({ Text = o.Name or "Input", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(0.4, 0, 1, 0),
+        TextTruncate = Enum.TextTruncate.AtEnd, Parent = row })
     local box = New("TextBox", {
         Size = UDim2.new(0.6, 0, 0, 24), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0),
         BackgroundColor3 = Theme.Window, Text = tostring(o.Default or ""), PlaceholderText = o.Placeholder or "",
         Font = Fonts.Medium, TextSize = 13, TextColor3 = Theme.Text, PlaceholderColor3 = Theme.Muted,
-        ClearTextOnFocus = false, Parent = row,
+        TextXAlignment = Left, ClearTextOnFocus = false, Parent = row,
     }, { Corner(5), Stroke(Theme.Stroke, 1) })
     local obj = { Value = tostring(o.Default or "") }
     function obj:Set(v, silent)
