@@ -233,10 +233,17 @@ function Library:CreateWindow(o)
     local userName = user.Name or Players.LocalPlayer.DisplayName
     local avatar = New("Frame", {
         Size = UDim2.fromOffset(38, 38), AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 12, 0.5, 2),
-        BackgroundColor3 = Theme.Row, Parent = footer,
+        BackgroundColor3 = Theme.Row, ClipsDescendants = true, Parent = footer,
     }, { Corner(19), Stroke(Theme.Accent, 2, 0.1) })
-    Label({ Text = string.upper(string.sub(userName, 1, 1)), TextSize = 17, Font = Fonts.Bold,
-        TextColor3 = Theme.AccentLight, TextXAlignment = Center, Size = UDim2.fromScale(1, 1), Parent = avatar })
+    local avatarLogo = user.Logo or o.Logo
+    if avatarLogo then
+        New("ImageLabel", {
+            Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = avatarLogo, Parent = avatar,
+        })
+    else
+        Label({ Text = string.upper(string.sub(userName, 1, 1)), TextSize = 17, Font = Fonts.Bold,
+            TextColor3 = Theme.AccentLight, TextXAlignment = Center, Size = UDim2.fromScale(1, 1), Parent = avatar })
+    end
     Label({
         Text = userName, Font = Fonts.Bold, TextSize = 13, Position = UDim2.fromOffset(58, 18),
         Size = UDim2.new(1, -64, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd, Parent = footer,
@@ -288,11 +295,18 @@ function Library:CreateWindow(o)
     })
 
     -- floating reopen button (shown while window is hidden)
+    -- o.FloatText = custom letter (default "V"), o.Logo = "rbxassetid://..." to show logo instead
     self.Float = New("TextButton", {
         Size = UDim2.fromOffset(44, 44), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 38, 0.5, 0),
-        BackgroundColor3 = Theme.Window, Text = "V", Font = Fonts.Bold, TextSize = 20,
+        BackgroundColor3 = Theme.Window, Text = o.Logo and "" or (o.FloatText or "V"), Font = Fonts.Bold, TextSize = 20,
         TextColor3 = Theme.AccentLight, AutoButtonColor = false, Visible = false, Parent = self.Gui,
     }, { Corner(22), Stroke(Theme.Accent, 2, 0.2) })
+    if o.Logo then
+        New("ImageLabel", {
+            Size = UDim2.fromOffset(32, 32), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            BackgroundTransparency = 1, Image = o.Logo, Parent = self.Float,
+        }, { Corner(16) })
+    end
     self.Float.MouseButton1Click:Connect(function() self:Toggle(true) end)
 
     -- popup blocker (closes the open dropdown)
@@ -1566,6 +1580,7 @@ function Library:Demo()
         Subtitle = "Premium Script Hub | Made for Roblox",
         User = { Name = "VoltScriptZ", Tag = "Premium User" },
         ToggleKey = Enum.KeyCode.RightControl,
+        Logo = "rbxassetid://111719176476489",
     })
 
     Win:AddSection("General")
