@@ -1580,7 +1580,7 @@ function Library:Demo()
         Subtitle = "Premium Script Hub | Made for Roblox",
         User = { Name = "VoltScriptZ", Tag = "Premium User" },
         ToggleKey = Enum.KeyCode.RightControl,
-        Logo = "rbxassetid://111719176476489",
+        Logo = "rbxassetid://100712256015627",
     })
 
     Win:AddSection("General")
