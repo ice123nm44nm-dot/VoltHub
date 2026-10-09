@@ -294,10 +294,9 @@ function Library:CreateWindow(o)
         BackgroundTransparency = 1, Parent = self.Main,
     })
 
-    -- floating reopen button (shown while window is hidden)
-    -- o.FloatText = custom letter (default "V"), o.Logo = "rbxassetid://..." to show logo instead
+    -- floating reopen button (shown while window is hidden): draggable, click to reopen
     self.Float = New("TextButton", {
-        Size = UDim2.fromOffset(44, 44), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 38, 0.5, 0),
+        Size = UDim2.fromOffset(44, 44), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 60),
         BackgroundColor3 = Theme.Window, Text = o.Logo and "" or (o.FloatText or "V"), Font = Fonts.Bold, TextSize = 20,
         TextColor3 = Theme.AccentLight, AutoButtonColor = false, Visible = false, Parent = self.Gui,
     }, { Corner(22), Stroke(Theme.Accent, 2, 0.2) })
@@ -307,7 +306,29 @@ function Library:CreateWindow(o)
             BackgroundTransparency = 1, Image = o.Logo, Parent = self.Float,
         }, { Corner(16) })
     end
-    self.Float.MouseButton1Click:Connect(function() self:Toggle(true) end)
+    -- drag to move; release without moving reopens the window
+    local floatDragging, floatDragStart, floatStartPos, floatMoved
+    self:_connect(self.Float.InputBegan, function(i)
+        if IsPress(i) then
+            floatDragging, floatDragStart, floatStartPos, floatMoved = true, i.Position, self.Float.Position, false
+        end
+    end)
+    self:_connect(UserInputService.InputChanged, function(i)
+        if floatDragging and IsMove(i) then
+            local d = i.Position - floatDragStart
+            if d.Magnitude > 8 then floatMoved = true end
+            if floatMoved then
+                self.Float.Position = UDim2.new(floatStartPos.X.Scale, floatStartPos.X.Offset + d.X,
+                    floatStartPos.Y.Scale, floatStartPos.Y.Offset + d.Y)
+            end
+        end
+    end)
+    self:_connect(UserInputService.InputEnded, function(i)
+        if floatDragging and IsPress(i) then
+            floatDragging = false
+            if not floatMoved then self:Toggle(true) end
+        end
+    end)
 
     -- popup blocker (closes the open dropdown)
     self.Blocker = New("TextButton", {
