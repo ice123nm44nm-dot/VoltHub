@@ -452,10 +452,11 @@ function Window:Notify(o)
     local n = New("Frame", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Theme.CardHeader,
         BorderSizePixel = 0, ZIndex = 101, LayoutOrder = self._notifyOrder, Parent = holder,
-    }, { Corner(8), Stroke(Theme.Accent, 1, 0.4), Pad(10, 10, 10, 10) })
-    Label({ Text = o.Title or "Notice", Font = Fonts.Bold, TextSize = 13, Size = UDim2.new(1, 0, 0, 16), ZIndex = 102, Parent = n })
+    }, { Corner(8), Stroke(Theme.Accent, 1, 0.4), Pad(10, 10, 10, 10),
+        New("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    Label({ Text = o.Title or "Notice", Font = Fonts.Bold, TextSize = 13, Size = UDim2.new(1, 0, 0, 16), LayoutOrder = 1, ZIndex = 102, Parent = n })
     Label({ Text = o.Text or "", TextSize = 12, TextColor3 = Theme.Para, TextWrapped = true,
-        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 102, Parent = n })
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 2, ZIndex = 102, Parent = n })
     task.delay(o.Duration or 3, function()
         if n.Parent then
             Tween(n, { BackgroundTransparency = 1 }, 0.3)
