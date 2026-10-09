@@ -239,7 +239,7 @@ function Library:CreateWindow(o)
     if avatarLogo then
         New("ImageLabel", {
             Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = avatarLogo, Parent = avatar,
-        })
+        }, { Corner(19) })
     else
         Label({ Text = string.upper(string.sub(userName, 1, 1)), TextSize = 17, Font = Fonts.Bold,
             TextColor3 = Theme.AccentLight, TextXAlignment = Center, Size = UDim2.fromScale(1, 1), Parent = avatar })
