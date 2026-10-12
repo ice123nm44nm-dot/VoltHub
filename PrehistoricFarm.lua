@@ -236,6 +236,16 @@ local function MashNeed(layer, quality)
 end
 
 local function IslandCenter(island)
+    local cx, cz = nil, nil
+    pcall(function()
+        local z = Config.Zones and Config.Zones[island]
+        if z and z.Center then
+            cx, cz = z.Center.x, z.Center.z
+        end
+    end)
+    if cx then
+        return Vector3.new(cx, 10, cz)
+    end
     local map = workspace:FindFirstChild("Map")
     if map then
         local folder = map:FindFirstChild(island)
@@ -3538,6 +3548,7 @@ MiscCard:AddToggle({
 
 local ConfigCard = SettingsTab:AddCard({
     Title = "Configs",
+    Subtitle = "Save and load settings",
     Toggle = false,
     Column = 1,
 })
