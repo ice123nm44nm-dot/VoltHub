@@ -1249,7 +1249,7 @@ function Card:AddTextbox(o)
     Label({ Text = o.Name or "Input", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(0.4, 0, 1, 0),
         TextTruncate = Enum.TextTruncate.AtEnd, Parent = row })
     local box = New("TextBox", {
-        Size = UDim2.new(0.6, 0, 0, 24), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0),
+        Size = UDim2.new(0.6, 0, 0, 24), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
         BackgroundColor3 = Theme.Window, Text = tostring(o.Default or ""), PlaceholderText = o.Placeholder or "",
         Font = Fonts.Medium, TextSize = 13, TextColor3 = Theme.Text, PlaceholderColor3 = Theme.Muted,
         TextXAlignment = Left, ClearTextOnFocus = false, Parent = row,
