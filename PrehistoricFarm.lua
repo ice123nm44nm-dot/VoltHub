@@ -100,6 +100,7 @@ local State = {
     RaptorAim = "Head",
     RaptorH = 0,
     LastRaptor = "",
+    AutoRaptorSummon = false,
     AutoTrue = false,
     TrueAim = "Head",
     TrueH = 0,
@@ -327,6 +328,24 @@ local function DigOneSite(site, quality, holdTime)
         if gone then
             return true
         end
+        pcall(function()
+            local pv = site:GetPivot()
+            local hrp0 = GetHRP()
+            if pv and hrp0 then
+                if (hrp0.Position - pv.Position).Magnitude > 6 then
+                    local dir0 = Vector3.new(hrp0.Position.X - pv.Position.X, 0, hrp0.Position.Z - pv.Position.Z)
+                    if dir0.Magnitude < 0.1 then
+                        dir0 = Vector3.new(4, 0, 0)
+                    end
+                    dir0 = dir0.Unit
+                    Teleport(pv.Position + dir0 * 3 + Vector3.new(0, 3, 0), pv.Position)
+                    task.wait(0.3)
+                end
+            end
+        end)
+        if not State.AutoDig then
+            return false
+        end
         local tool = GetTool()
         if not tool then
             return false
@@ -476,7 +495,7 @@ task.spawn(function()
                     dir = Vector3.new(4, 0, 0)
                 end
                 dir = dir.Unit
-                Teleport(target.Pos + dir * 4.2 + Vector3.new(0, 3, 0), target.Pos)
+                Teleport(target.Pos + dir * 3 + Vector3.new(0, 3, 0), target.Pos)
                 task.wait(0.4)
             end
         end
@@ -1040,7 +1059,8 @@ local function TryPlaceOnce()
             placed = placed + 1
         end
     end
-    if placed >= 8 then
+    local cap = tonumber(LocalPlayer:GetAttribute("RanchCap")) or 8
+    if placed >= cap then
         return
     end
     local best = BestStored()
@@ -2151,6 +2171,14 @@ RaptorCard:AddToggle({
     end
 })
 
+RaptorCard:AddToggle({
+    Name = "Auto Summon",
+    Default = false,
+    Callback = function(v)
+        State.AutoRaptorSummon = v
+    end
+})
+
 RaptorCard:AddDropdown({
     Name = "Target Part",
     Name = "Target Part",    Flag = "RaptorCard_TargetPart",
@@ -2245,7 +2273,15 @@ local function BossHeadPos(key)
             return
         end
         local headPt = cf.Position + cf.LookVector * 50
-        pos = headPt + Vector3.new(0, 16 + (State.MosaH or 0), 0)
+        local hrp0 = GetHRP()
+        local back = Vector3.new(0, 0, 0)
+        if hrp0 then
+            local d = Vector3.new(hrp0.Position.X - headPt.X, 0, hrp0.Position.Z - headPt.Z)
+            if d.Magnitude >= 0.1 then
+                back = d.Unit * 40
+            end
+        end
+        pos = headPt + back + Vector3.new(0, 30 + (State.MosaH or 0), 0)
         look = headPt
     end)
     if pos then
@@ -2891,6 +2927,9 @@ task.spawn(function()
             pcall(function()
                 local st = FTD:GetAttribute("RaptorState")
                 if st ~= "Fight" then
+                    if State._raptorSummonAt and os.clock() - State._raptorSummonAt < 90 then
+                        return
+                    end
                     local ready = tonumber(FTD:GetAttribute("RaptorReadyAt")) or 0
                     local now = workspace:GetServerTimeNow()
                     if ready > 0 and ready - now < 20 then
@@ -3268,6 +3307,109 @@ task.spawn(function()
         if State._trueNext then
             pcall(function()
                 State._trueNext:Set(tostring(FTD:GetAttribute("TrueNextSpecies") or "-"))
+            end)
+        end
+    end
+end)
+
+task.spawn(function()
+    while Gen == getgenv().VoltGen do
+        task.wait(10)
+        if State.AutoRaptorSummon then
+            pcall(function()
+                if RaptorPose() then
+                    return
+                end
+                local keyName = "BoneboundKey"
+                pcall(function()
+                    if Config.Rudeus and Config.Rudeus.Key then
+                        keyName = Config.Rudeus.Key
+                    end
+                end)
+                local ch = LocalPlayer.Character
+                local pack = LocalPlayer:FindFirstChild("Backpack")
+                local has = (ch and ch:FindFirstChild(keyName)) or (pack and pack:FindFirstChild(keyName))
+                if not has then
+                    State.LastRaptor = "summon: no key"
+                    if State._raptorSt then
+                        pcall(function()
+                            State._raptorSt:Set(State.LastRaptor)
+                        end)
+                    end
+                    return
+                end
+                local tool = pack and pack:FindFirstChild(keyName)
+                if tool and ch then
+                    local hum = ch:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        pcall(function()
+                            hum:EquipTool(tool)
+                        end)
+                        task.wait(0.4)
+                    end
+                end
+                local ready = tonumber(FTD:GetAttribute("RaptorReadyAt")) or 0
+                if ready > 0 and ready - workspace:GetServerTimeNow() > 0 then
+                    State.LastRaptor = "summon: cooldown"
+                    if State._raptorSt then
+                        pcall(function()
+                            State._raptorSt:Set(State.LastRaptor)
+                        end)
+                    end
+                    return
+                end
+                local hrp = GetHRP()
+                if not hrp then
+                    return
+                end
+                local consolePos = nil
+                pcall(function()
+                    local map = workspace:FindFirstChild("Map")
+                    local bg = map and map:FindFirstChild("Blackgate", true)
+                    local gar = bg and bg:FindFirstChild("Garage", true)
+                    local lc = gar and gar:FindFirstChild("LockConsole", true)
+                    local pp = lc and lc:FindFirstChild("PromptPart", true)
+                    if pp and pp:IsA("BasePart") then
+                        consolePos = pp.Position
+                    end
+                end)
+                if not consolePos then
+                    consolePos = Vector3.new(-600, 6, 2955)
+                end
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+                hrp.CFrame = CFrame.new(consolePos + Vector3.new(0, 3, 0))
+                task.wait(1)
+                local pr = nil
+                pcall(function()
+                    local map = workspace:FindFirstChild("Map")
+                    local bg = map and map:FindFirstChild("Blackgate", true)
+                    pr = FindPrompt(bg, "Turn the Bonebound Key")
+                end)
+                if pr then
+                    pcall(function()
+                        fireproximityprompt(pr)
+                    end)
+                    State._raptorSummonAt = os.clock()
+                    State.LastRaptor = "summoned, waiting fight"
+                    if State._raptorSt then
+                        pcall(function()
+                            State._raptorSt:Set(State.LastRaptor)
+                        end)
+                    end
+                    local t0 = os.clock()
+                    while os.clock() - t0 < 60 do
+                        if not State.AutoRaptorSummon then
+                            return
+                        end
+                        if RaptorPose() then
+                            State.LastRaptor = "fight started"
+                            return
+                        end
+                        task.wait(2)
+                    end
+                    State.LastRaptor = "summon: no fight"
+                end
             end)
         end
     end
