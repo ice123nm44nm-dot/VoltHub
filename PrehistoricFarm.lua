@@ -358,6 +358,9 @@ local function DigOneSite(site, quality, holdTime)
         if not State.AutoDig then
             return false
         end
+        if State.AnyBossBusy and State.AnyBossBusy() then
+            return false
+        end
         local gone = false
         pcall(function()
             gone = site.Parent == nil
@@ -383,6 +386,9 @@ local function DigOneSite(site, quality, holdTime)
         if not State.AutoDig then
             return false
         end
+        if State.AnyBossBusy and State.AnyBossBusy() then
+            return false
+        end
         local tool = GetTool()
         if not tool then
             return false
@@ -395,6 +401,12 @@ local function DigOneSite(site, quality, holdTime)
             end)
             return false
         end
+        if State.AnyBossBusy and State.AnyBossBusy() then
+            pcall(function()
+                tool:Deactivate()
+            end)
+            return false
+        end
         pcall(function()
             tool:Deactivate()
         end)
@@ -402,6 +414,9 @@ local function DigOneSite(site, quality, holdTime)
         local need = MashNeed(layer, quality)
         for i = 1, need do
             if not State.AutoDig then
+                return false
+            end
+            if State.AnyBossBusy and State.AnyBossBusy() then
                 return false
             end
             local t = GetTool()
@@ -492,6 +507,9 @@ task.spawn(function()
     while Gen == getgenv().VoltGen do
         task.wait(0.25)
         if not State.AutoDig then
+            continue
+        end
+        if State.AnyBossBusy and State.AnyBossBusy() then
             continue
         end
         local island = State.DigIsland
@@ -2490,6 +2508,21 @@ local function RideToBoss(poseFn)
         end
         task.wait(1)
     end
+    local t1 = os.clock()
+    while os.clock() - t1 < 15 do
+        local fld = workspace:FindFirstChild("FTD_Partners")
+        local pm = fld and fld:FindFirstChild("Partner_" .. LocalPlayer.Name)
+        local h = GetHRP()
+        if pm and h then
+            local ok, mcf = pcall(function()
+                return pm:GetPivot()
+            end)
+            if ok and (mcf.Position - h.Position).Magnitude < 45 then
+                break
+            end
+        end
+        task.wait(1)
+    end
     return RideEnsure()
 end
 
@@ -2957,6 +2990,7 @@ task.spawn(function()
                 hrp.AssemblyLinearVelocity = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
                 hrp.CFrame = CFrame.new(NessiePillar)
+                State._nessieSummonBusy = true
                 task.wait(1)
                 local map = workspace:FindFirstChild("Map")
                 local pillar = map and map:FindFirstChild("Mystery", true)
@@ -2988,16 +3022,19 @@ task.spawn(function()
                     local t0 = os.clock()
                     while os.clock() - t0 < 30 do
                         if not State.AutoSummon then
+                            State._nessieSummonBusy = false
                             return
                         end
                         if NessiePose() then
                             State.LastNessie = "fight started"
+                            State._nessieSummonBusy = false
                             return
                         end
                         task.wait(2)
                     end
                     State.LastNessie = "summon: no fight"
                 end
+                State._nessieSummonBusy = false
             end)
         end
     end
@@ -3182,6 +3219,9 @@ task.spawn(function()
             pcall(function()
                 local st = FTD:GetAttribute("RaptorState")
                 if st ~= "Fight" then
+                    if State.AutoRaptorSummon then
+                        return
+                    end
                     if State._raptorSummonBusy then
                         return
                     end
@@ -3403,6 +3443,89 @@ local function TruePose()
     return cf
 end
 
+-- Boss > Dig priority: pause dig while any boss fight or summon teleport owns HRP
+local function AnyBossFighting()
+    if State.AutoBoss then
+        local ok, cf = pcall(MosaPose)
+        if ok and cf then
+            return true
+        end
+    end
+    if State.AutoNessie then
+        local ok, cf = pcall(NessiePose)
+        if ok and cf then
+            return true
+        end
+    end
+    if State.AutoRaptor then
+        local ok, cf = pcall(RaptorPose)
+        if ok and cf then
+            return true
+        end
+    end
+    if State.AutoTrue then
+        local ok, cf = pcall(TruePose)
+        if ok and cf then
+            return true
+        end
+    end
+    return false
+end
+
+local function AnySummonBusy()
+    if State._raptorSummonBusy then
+        return true
+    end
+    if State._nessieSummonBusy then
+        return true
+    end
+    -- armed: summon toggle on + preconditions met + no fight yet -> hold HRP across gaps
+    if State.AutoRaptorSummon then
+        local ok, armed = pcall(function()
+            if RaptorPose() then
+                return false
+            end
+            local keyName = "BoneboundKey"
+            if Config.Rudeus and Config.Rudeus.Key then
+                keyName = Config.Rudeus.Key
+            end
+            local ch = LocalPlayer.Character
+            local pack = LocalPlayer:FindFirstChild("Backpack")
+            local has = (ch and ch:FindFirstChild(keyName)) or (pack and pack:FindFirstChild(keyName))
+            if not has then
+                return false
+            end
+            local ready = tonumber(FTD:GetAttribute("RaptorReadyAt")) or 0
+            if ready > 0 and ready - workspace:GetServerTimeNow() > 0 then
+                return false
+            end
+            return true
+        end)
+        if ok and armed then
+            return true
+        end
+    end
+    if State.AutoSummon then
+        local ok, armed = pcall(function()
+            if NessiePose() then
+                return false
+            end
+            return NessieFrags() >= 12
+        end)
+        if ok and armed then
+            return true
+        end
+    end
+    return false
+end
+
+State.AnyBossBusy = function()
+    local ok, busy = pcall(function()
+        return AnyBossFighting() or AnySummonBusy()
+    end)
+    return ok and busy or false
+end
+
 local function TrueSpearOk()
     local ch = LocalPlayer.Character
     if not ch then
@@ -3582,7 +3705,7 @@ end)
 
 task.spawn(function()
     while Gen == getgenv().VoltGen do
-        task.wait(10)
+        task.wait(1)
         if State.AutoRaptorSummon then
             pcall(function()
                 if RaptorPose() then
@@ -3606,16 +3729,8 @@ task.spawn(function()
                     end
                     return
                 end
-                local tool = pack and pack:FindFirstChild(keyName)
-                if tool and ch then
-                    local hum = ch:FindFirstChildOfClass("Humanoid")
-                    if hum then
-                        pcall(function()
-                            hum:EquipTool(tool)
-                        end)
-                        task.wait(0.4)
-                    end
-                end
+                local tool = nil
+                -- no equip: fire prompt without holding key
                 local ready = tonumber(FTD:GetAttribute("RaptorReadyAt")) or 0
                 if ready > 0 and ready - workspace:GetServerTimeNow() > 0 then
                     State.LastRaptor = "summon: cooldown"
@@ -3673,7 +3788,7 @@ task.spawn(function()
                     end
                     local t0 = os.clock()
                     local started = false
-                    while os.clock() - t0 < 60 do
+                    while os.clock() - t0 < 3 do
                         if not State.AutoRaptorSummon then
                             break
                         end
@@ -3682,7 +3797,16 @@ task.spawn(function()
                             started = true
                             break
                         end
-                        task.wait(2)
+                        local rst = nil
+                        pcall(function()
+                            rst = FTD:GetAttribute("RaptorState")
+                        end)
+                        if rst and rst ~= "Idle" then
+                            State.LastRaptor = "fight started"
+                            started = true
+                            break
+                        end
+                        task.wait(0.5)
                     end
                     if not started and State.AutoRaptorSummon then
                         State.LastRaptor = "summon: no fight"
