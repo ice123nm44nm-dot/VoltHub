@@ -80,6 +80,7 @@ local State = {
     DinoRarity = { "None" },
     AutoFish = false,
     FishTarget = { "All" },
+    FishPower = 0.95,
     FishNeedSpot = false,
     AutoNest = false,
     NestTarget = "All",
@@ -1502,7 +1503,7 @@ local function TryFishOnce()
         return
     end
     local ok = pcall(function()
-        cast = remotes.FishRequest:InvokeServer("Cast", 0.95)
+        cast = remotes.FishRequest:InvokeServer("Cast", State.FishPower or 0.95)
     end)
     if not ok or type(cast) ~= "table" then
         return
@@ -1522,6 +1523,21 @@ local function TryFishOnce()
     if not cast.session then
         return
     end
+    pcall(function()
+        if State._fishDist and cast.dist then
+            local txt = tostring(math.floor(cast.dist)) .. "m"
+            if cast.depth then
+                txt = txt .. " / " .. tostring(math.floor(cast.depth)) .. "m"
+            end
+            if cast.zone then
+                txt = txt .. " " .. tostring(cast.zone)
+            end
+            State._fishDist:Set(txt)
+        end
+        if State._fishSt then
+            State._fishSt:Set("cast ok")
+        end
+    end)
     task.wait(4)
     if not State.AutoFish then
         return
@@ -2021,6 +2037,21 @@ FishCard:AddDropdown({
         State.FishTarget = v
     end
 })
+
+FishCard:AddSlider({
+    Name = "Cast Power",
+    Name = "Cast Power",    Flag = "FishCard_CastPower",
+    Min = 10,
+    Max = 100,
+    Increment = 5,
+    Default = 95,
+    Callback = function(v)
+        State.FishPower = v / 100
+    end
+})
+
+State._fishDist = FishCard:AddInfo({ Text = "Distance", Value = "-" })
+State._fishSt = FishCard:AddInfo({ Text = "Status", Value = "idle" })
 
 local WebhookCard = WebhookTab:AddCard({
     Title = "Webhook",
