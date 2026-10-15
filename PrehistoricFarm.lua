@@ -88,6 +88,7 @@ local State = {
     BossTarget = "Mosa",
     BossAim = "Head",
     MosaH = 0,
+    BossMode = "Throw",
     WebhookOn = true,
     WebhookURL = "",
     AutoNessie = false,
@@ -95,15 +96,18 @@ local State = {
     AutoFarmFrag = false,
     NessieAim = "Head",
     NessieH = 0,
+    NessieMode = "Throw",
     LastNessie = "",
     AutoRaptor = false,
     RaptorAim = "Head",
     RaptorH = 0,
+    RaptorMode = "Throw",
     LastRaptor = "",
     AutoRaptorSummon = false,
     AutoTrue = false,
     TrueAim = "Head",
     TrueH = 0,
+    TrueMode = "Throw",
     LastTrue = "",
     BlackScreen = false,
     LowQ = false,
@@ -152,7 +156,7 @@ local HoldTime = {
     Weak = 0.2
 }
 
-local IslandOrder = { "Cambrian", "Devonian", "Triassic", "Jurassic", "Cretaceous", "LateCretaceous" }
+local IslandOrder = { "Cambrian", "Devonian", "Triassic", "Jurassic", "Cretaceous", "LateCretaceous", "Pacific" }
 
 local function GetHRP()
     local char = LocalPlayer.Character
@@ -237,7 +241,24 @@ local function MashNeed(layer, quality)
     return 10
 end
 
+local function PreTeleport()
+    pcall(function()
+        local folder = LocalPlayer:WaitForChild("PlayerScripts"):WaitForChild("FTD_Controllers")
+        local mod = folder and folder:FindFirstChild("PartnerController")
+        local pc = mod and require(mod)
+        if pc and pc.IsRiding and pc.IsRiding() then
+            if pc.StopRide then
+                pc.StopRide()
+            end
+            task.wait(0.3)
+        end
+    end)
+end
+
 local function IslandCenter(island)
+    if island == "Pacific" then
+        return Vector3.new(-4300, -400, 0)
+    end
     local cx, cz = nil, nil
     pcall(function()
         local z = Config.Zones and Config.Zones[island]
@@ -306,6 +327,21 @@ end
 local function Teleport(pos, lookAt)
     local hrp = GetHRP()
     if not hrp or not pos then
+        return
+    end
+    pcall(function()
+        local folder = LocalPlayer:WaitForChild("PlayerScripts"):WaitForChild("FTD_Controllers")
+        local mod = folder and folder:FindFirstChild("PartnerController")
+        local pc = mod and require(mod)
+        if pc and pc.IsRiding and pc.IsRiding() then
+            if pc.StopRide then
+                pc.StopRide()
+            end
+            task.wait(0.3)
+        end
+    end)
+    hrp = GetHRP()
+    if not hrp then
         return
     end
     hrp.AssemblyLinearVelocity = Vector3.zero
@@ -1812,7 +1848,7 @@ DigCard:AddToggle({
 DigCard:AddDropdown({
     Name = "Dig Islands",
     Name = "Dig Islands",    Flag = "DigCard_DigIslands",
-    Options = { "Auto", "Cambrian", "Devonian", "Triassic", "Jurassic", "Cretaceous", "LateCretaceous" },
+    Options = { "Auto", "Cambrian", "Devonian", "Triassic", "Jurassic", "Cretaceous", "LateCretaceous", "Pacific" },
     Default = "Auto",
     Callback = function(v)
         State.DigIsland = v
@@ -2081,6 +2117,16 @@ BossCard:AddDropdown({
     end
 })
 
+BossCard:AddDropdown({
+    Name = "Mode",
+    Name = "Mode",    Flag = "BossCard_Mode",
+    Options = { "Throw", "Ride" },
+    Default = "Throw",
+    Callback = function(v)
+        State.BossMode = v
+    end
+})
+
 BossCard:AddSlider({
     Name = "Height Offset",
     Name = "Height Offset",    Flag = "BossCard_HeightOffset",
@@ -2141,6 +2187,16 @@ NessieCard:AddDropdown({
     end
 })
 
+NessieCard:AddDropdown({
+    Name = "Mode",
+    Name = "Mode",    Flag = "NessieCard_Mode",
+    Options = { "Throw", "Ride" },
+    Default = "Throw",
+    Callback = function(v)
+        State.NessieMode = v
+    end
+})
+
 NessieCard:AddSlider({
     Name = "Height Offset",
     Name = "Height Offset",    Flag = "NessieCard_HeightOffset",
@@ -2190,6 +2246,16 @@ RaptorCard:AddDropdown({
     end
 })
 
+RaptorCard:AddDropdown({
+    Name = "Mode",
+    Name = "Mode",    Flag = "RaptorCard_Mode",
+    Options = { "Throw", "Ride" },
+    Default = "Throw",
+    Callback = function(v)
+        State.RaptorMode = v
+    end
+})
+
 RaptorCard:AddSlider({
     Name = "Height Offset",
     Name = "Height Offset",    Flag = "RaptorCard_HeightOffset",
@@ -2229,6 +2295,16 @@ TrueCard:AddDropdown({
     Default = "Head",
     Callback = function(v)
         State.TrueAim = v
+    end
+})
+
+TrueCard:AddDropdown({
+    Name = "Mode",
+    Name = "Mode",    Flag = "TrueCard_Mode",
+    Options = { "Throw", "Ride" },
+    Default = "Throw",
+    Callback = function(v)
+        State.TrueMode = v
     end
 })
 
@@ -2305,6 +2381,129 @@ local function MosaPose()
         cf = DC.BossPose("Mosa", workspace:GetServerTimeNow())
     end)
     return cf
+end
+
+local function RidePC()
+    local pc = nil
+    pcall(function()
+        pc = require(LocalPlayer:WaitForChild("PlayerScripts"):WaitForChild("FTD_Controllers"):WaitForChild("PartnerController"))
+    end)
+    return pc
+end
+
+local function RideMounted()
+    local pc = RidePC()
+    if not pc then
+        return false
+    end
+    local ok, r = pcall(function()
+        return pc.IsRiding()
+    end)
+    return ok and r == true
+end
+
+local function RideEnsure()
+    if RideMounted() then
+        return true
+    end
+    local pc = RidePC()
+    if not pc then
+        return false
+    end
+    pcall(function()
+        pc.Mount()
+    end)
+    local t0 = os.clock()
+    while os.clock() - t0 < 3 do
+        if RideMounted() then
+            State._rideMounted = true
+            return true
+        end
+        task.wait(0.2)
+    end
+    return RideMounted()
+end
+
+local function RideKeys(wDown)
+    if wDown == State._wHeld then
+        return
+    end
+    State._wHeld = wDown
+    pcall(function()
+        local vim = game:GetService("VirtualInputManager")
+        vim:SendKeyEvent(wDown and true or false, Enum.KeyCode.W, false, game)
+    end)
+end
+
+local function RideMelee(bossKey, idx)
+    pcall(function()
+        local PC = RidePC()
+        if PC then
+            PC.PlayAttack(LocalPlayer, idx)
+        end
+    end)
+    pcall(function()
+        FTD:WaitForChild("Remotes"):WaitForChild("PvEEvent"):FireServer("Swing", idx)
+    end)
+    task.wait(0.5)
+    pcall(function()
+        local DC2 = DinoCombatCache
+        local b = DC2 and DC2.Bosses and DC2.Bosses[bossKey]
+        if not b then
+            return
+        end
+        if FTD:GetAttribute(b.state) ~= "Fight" then
+            return
+        end
+        FTD:WaitForChild("Remotes"):WaitForChild("PvEEvent"):FireServer("Hit", bossKey, idx)
+    end)
+end
+
+local function RideToBoss(poseFn)
+    if RideMounted() then
+        return true
+    end
+    PreTeleport()
+    local cf = poseFn()
+    if not cf then
+        return false
+    end
+    local hrp = GetHRP()
+    if hrp then
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        hrp.CFrame = CFrame.new(cf.Position + Vector3.new(0, 25, 0))
+        local t0 = os.clock()
+        while os.clock() - t0 < 10 do
+            task.wait(0.5)
+            local h = GetHRP()
+            if not h then
+                return false
+            end
+            local now = poseFn()
+            if not now then
+                return false
+            end
+            if (h.Position - now.Position).Magnitude < 60 then
+                break
+            end
+        end
+        task.wait(1)
+    end
+    return RideEnsure()
+end
+
+local function RideStop()
+    RideKeys(false)
+    if State._rideMounted then
+        State._rideMounted = false
+        local pc = RidePC()
+        if pc then
+            pcall(function()
+                pc.StopRide()
+            end)
+        end
+    end
 end
 
 local BossHeadConn = nil
@@ -2426,12 +2625,20 @@ task.spawn(function()
         State._mosaPrev = (fighting and true) or false
         if State.AutoBoss then
             if ok and fighting then
-                State.LastBoss = "fighting"
-                if EnsureSpear() then
+                if State.BossMode == "Ride" then
+                    if RideToBoss(MosaPose) then
+                        State.LastBoss = "riding"
+                    else
+                        State.LastBoss = "riding: no mount"
+                    end
+                elseif EnsureSpear() then
+                    State.LastBoss = "fighting"
                     BossThrow("Mosa")
                 else
                     State.LastBoss = "fighting, no spear"
                 end
+            elseif State.BossMode == "Ride" then
+                RideStop()
             end
             local hp, max = nil, nil
             pcall(function()
@@ -2626,12 +2833,20 @@ task.spawn(function()
         State._nessiePrev = nFighting
         if State.AutoNessie then
             if NessiePose() then
-                State.LastNessie = "fighting"
-                if NessieSpearOk() then
+                if State.NessieMode == "Ride" then
+                    if RideToBoss(NessiePose) then
+                        State.LastNessie = "riding"
+                    else
+                        State.LastNessie = "riding: no mount"
+                    end
+                elseif NessieSpearOk() then
+                    State.LastNessie = "fighting"
                     NessieThrow()
                 else
                     State.LastNessie = "fighting, no spear"
                 end
+            elseif State.NessieMode == "Ride" then
+                RideStop()
             end
             local hp, max = NessieShare()
             if hp and max then
@@ -2690,6 +2905,7 @@ task.spawn(function()
                 if not hrp then
                     return
                 end
+                PreTeleport()
                 hrp.AssemblyLinearVelocity = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
                 hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
@@ -2737,6 +2953,7 @@ task.spawn(function()
                 if not hrp then
                     return
                 end
+                PreTeleport()
                 hrp.AssemblyLinearVelocity = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
                 hrp.CFrame = CFrame.new(NessiePillar)
@@ -2746,9 +2963,22 @@ task.spawn(function()
                 pillar = pillar and pillar:FindFirstChild("Pillar", true)
                 local pr = FindPrompt(pillar)
                 if pr then
-                    pcall(function()
-                        fireproximityprompt(pr)
-                    end)
+                    for attempt = 1, 3 do
+                        if not State.AutoSummon or NessiePose() then
+                            break
+                        end
+                        pcall(function()
+                            fireproximityprompt(pr)
+                        end)
+                        task.wait(3)
+                        local still = FindPrompt(pillar)
+                        if still and still.Enabled then
+                            pr = still
+                        else
+                            pr = nil
+                            break
+                        end
+                    end
                     State.LastNessie = "summoned, waiting fight"
                     if State._nessieSt then
                         pcall(function()
@@ -2886,12 +3116,20 @@ task.spawn(function()
         State._raptorPrev = rFighting
         if State.AutoRaptor then
             if RaptorPose() then
-                State.LastRaptor = "fighting"
-                if RaptorSpearOk() then
+                if State.RaptorMode == "Ride" then
+                    if RideToBoss(RaptorPose) then
+                        State.LastRaptor = "riding"
+                    else
+                        State.LastRaptor = "riding: no mount"
+                    end
+                elseif RaptorSpearOk() then
+                    State.LastRaptor = "fighting"
                     RaptorThrow()
                 else
                     State.LastRaptor = "fighting, no spear"
                 end
+            elseif State.RaptorMode == "Ride" then
+                RideStop()
             end
             local hp, max = nil, nil
             pcall(function()
@@ -2953,6 +3191,7 @@ task.spawn(function()
                     local ready = tonumber(FTD:GetAttribute("RaptorReadyAt")) or 0
                     local now = workspace:GetServerTimeNow()
                     if ready > 0 and ready - now < 20 then
+                        PreTeleport()
                         local hrp = GetHRP()
                         if hrp then
                             hrp.AssemblyLinearVelocity = Vector3.zero
@@ -3248,12 +3487,20 @@ task.spawn(function()
         State._truePrev = tFighting
         if State.AutoTrue then
             if TruePose() then
-                State.LastTrue = "fighting"
-                if TrueSpearOk() then
+                if State.TrueMode == "Ride" then
+                    if RideToBoss(TruePose) then
+                        State.LastTrue = "riding"
+                    else
+                        State.LastTrue = "riding: no mount"
+                    end
+                elseif TrueSpearOk() then
+                    State.LastTrue = "fighting"
                     TrueThrow()
                 else
                     State.LastTrue = "fighting, no spear"
                 end
+            elseif State.TrueMode == "Ride" then
+                RideStop()
             end
             local hp, max = nil, nil
             pcall(function()
@@ -3309,6 +3556,7 @@ task.spawn(function()
                     local nxt = tonumber(FTD:GetAttribute("TrueNext")) or 0
                     local now = workspace:GetServerTimeNow()
                     if nxt > 0 and nxt - now < 30 then
+                        PreTeleport()
                         local hrp = GetHRP()
                         if hrp then
                             hrp.AssemblyLinearVelocity = Vector3.zero
@@ -3397,6 +3645,11 @@ task.spawn(function()
                     consolePos = Vector3.new(-600, 6, 2955)
                 end
                 State._raptorSummonBusy = true
+                PreTeleport()
+                local hrp2 = GetHRP()
+                if hrp2 then
+                    hrp = hrp2
+                end
                 hrp.AssemblyLinearVelocity = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
                 hrp.CFrame = CFrame.new(consolePos + Vector3.new(0, 3, 0))
@@ -3441,6 +3694,45 @@ task.spawn(function()
     end
 end)
 
+
+task.spawn(function()
+    local qTick = 0
+    local meleeIdx = 0
+    while Gen == getgenv().VoltGen do
+        task.wait(0.5)
+        qTick = qTick + 1
+        local anyRide = false
+        local function rideBoss(autoKey, modeKey, poseFn, bossKey)
+            if not State[autoKey] or State[modeKey] ~= "Ride" then
+                return
+            end
+            local cf = poseFn()
+            if not cf then
+                return
+            end
+            if not RideMounted() then
+                return
+            end
+            local hrp = GetHRP()
+            if not hrp then
+                return
+            end
+            anyRide = true
+            meleeIdx = (meleeIdx % 4) + 1
+            RideMelee(bossKey, meleeIdx)
+            if qTick % 24 == 0 then
+                RideMelee(bossKey, 5)
+            end
+        end
+        pcall(rideBoss, "AutoBoss", "BossMode", MosaPose, "Mosa")
+        pcall(rideBoss, "AutoNessie", "NessieMode", NessiePose, "Nessie")
+        pcall(rideBoss, "AutoRaptor", "RaptorMode", RaptorPose, "Raptor")
+        pcall(rideBoss, "AutoTrue", "TrueMode", TruePose, "True")
+        if not anyRide then
+            RideKeys(false)
+        end
+    end
+end)
 
 local FoodCard = ShopTab:AddCard({
     Title = "Buy Dino Food",
