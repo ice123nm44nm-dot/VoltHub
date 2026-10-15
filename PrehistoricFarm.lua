@@ -111,6 +111,7 @@ local State = {
     FpsCap = 60,
     StreamMode = false,
     AntiAFK = true,
+    UiScale = 100,
 }
 getgenv().VoltDig = State
 
@@ -2273,21 +2274,37 @@ local function BossHeadPos(key)
             return
         end
         local headPt = cf.Position + cf.LookVector * 50
-        local hrp0 = GetHRP()
-        local back = Vector3.new(0, 0, 0)
-        if hrp0 then
-            local d = Vector3.new(hrp0.Position.X - headPt.X, 0, hrp0.Position.Z - headPt.Z)
-            if d.Magnitude >= 0.1 then
-                back = d.Unit * 40
-            end
-        end
-        pos = headPt + back + Vector3.new(0, 30 + (State.MosaH or 0), 0)
+        pos = headPt + Vector3.new(0, 30 + (State.MosaH or 0), 0)
         look = headPt
     end)
     if pos then
         return pos, look
     end
     return nil
+end
+
+local function MosaPose()
+    if DinoCombatCache == nil then
+        pcall(function()
+            DinoCombatCache = require(FTD:WaitForChild("DinoCombat"))
+        end)
+    end
+    local DC = DinoCombatCache
+    if not DC then
+        return nil
+    end
+    local cf = nil
+    pcall(function()
+        local b = DC.Bosses and DC.Bosses["Mosa"]
+        if not b then
+            return
+        end
+        if FTD:GetAttribute(b.state) ~= "Fight" then
+            return
+        end
+        cf = DC.BossPose("Mosa", workspace:GetServerTimeNow())
+    end)
+    return cf
 end
 
 local BossHeadConn = nil
@@ -2927,6 +2944,9 @@ task.spawn(function()
             pcall(function()
                 local st = FTD:GetAttribute("RaptorState")
                 if st ~= "Fight" then
+                    if State._raptorSummonBusy then
+                        return
+                    end
                     if State._raptorSummonAt and os.clock() - State._raptorSummonAt < 90 then
                         return
                     end
@@ -3376,6 +3396,7 @@ task.spawn(function()
                 if not consolePos then
                     consolePos = Vector3.new(-600, 6, 2955)
                 end
+                State._raptorSummonBusy = true
                 hrp.AssemblyLinearVelocity = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
                 hrp.CFrame = CFrame.new(consolePos + Vector3.new(0, 3, 0))
@@ -3398,22 +3419,28 @@ task.spawn(function()
                         end)
                     end
                     local t0 = os.clock()
+                    local started = false
                     while os.clock() - t0 < 60 do
                         if not State.AutoRaptorSummon then
-                            return
+                            break
                         end
                         if RaptorPose() then
                             State.LastRaptor = "fight started"
-                            return
+                            started = true
+                            break
                         end
                         task.wait(2)
                     end
-                    State.LastRaptor = "summon: no fight"
+                    if not started and State.AutoRaptorSummon then
+                        State.LastRaptor = "summon: no fight"
+                    end
                 end
+                State._raptorSummonBusy = false
             end)
         end
     end
 end)
+
 
 local FoodCard = ShopTab:AddCard({
     Title = "Buy Dino Food",
@@ -3816,6 +3843,31 @@ pcall(function()
         end
     end
 end)
+
+local UICard = SettingsTab:AddCard({
+    Title = "UI Scale",
+    Toggle = false,
+    Column = 2,
+})
+
+UICard:AddSlider({
+    Name = "Scale",
+    Name = "Scale",    Flag = "UICard_Scale",
+    Min = 50,
+    Max = 100,
+    Increment = 5,
+    Default = 100,
+    Suffix = "%",
+    Callback = function(v)
+        State.UiScale = v
+        pcall(function()
+            local sc = Win.Main and Win.Main:FindFirstChildOfClass("UIScale")
+            if sc then
+                sc.Scale = Win.BaseScale * (v / 100)
+            end
+        end)
+    end
+})
 
 Win:Notify({
     Title = "VoltScriptZ",
