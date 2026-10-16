@@ -2622,6 +2622,12 @@ pcall(function()
             if State.BossMode == "Ride" and not RideMounted() then
                 return
             end
+            if State.BossMode == "Ride" then
+                local own = State.RideOwner and State.RideOwner()
+                if own and own ~= "Mosa" then
+                    return
+                end
+            end
             local ok, pos, look = pcall(BossHeadPos, "Mosa")
             if ok and pos then
                 local hrp = GetHRP()
@@ -2731,7 +2737,10 @@ task.spawn(function()
         if State.AutoBoss then
             if ok and fighting then
                 if State.BossMode == "Ride" then
-                    if RideToBoss(MosaPose) then
+                    local own = State.RideOwner and State.RideOwner()
+                    if own and own ~= "Mosa" then
+                        State.LastBoss = "wait " .. tostring(own)
+                    elseif RideToBoss(MosaPose) then
                         State.LastBoss = "riding"
                     else
                         State.LastBoss = "riding: no mount"
@@ -2743,7 +2752,10 @@ task.spawn(function()
                     State.LastBoss = "fighting, no spear"
                 end
             elseif State.BossMode == "Ride" then
-                RideStop()
+                local own = State.RideOwner and State.RideOwner()
+                if not own then
+                    RideStop()
+                end
             end
             local hp, max = nil, nil
             pcall(function()
@@ -2912,6 +2924,12 @@ pcall(function()
             if State.NessieMode == "Ride" and not RideMounted() then
                 return
             end
+            if State.NessieMode == "Ride" then
+                local own = State.RideOwner and State.RideOwner()
+                if own and own ~= "Nessie" then
+                    return
+                end
+            end
             local cf = NessiePose()
             if cf then
                 local hrp = GetHRP()
@@ -2942,7 +2960,10 @@ task.spawn(function()
         if State.AutoNessie then
             if NessiePose() then
                 if State.NessieMode == "Ride" then
-                    if RideToBoss(NessiePose) then
+                    local own = State.RideOwner and State.RideOwner()
+                    if own and own ~= "Nessie" then
+                        State.LastNessie = "wait " .. tostring(own)
+                    elseif RideToBoss(NessiePose) then
                         State.LastNessie = "riding"
                     else
                         State.LastNessie = "riding: no mount"
@@ -2954,7 +2975,10 @@ task.spawn(function()
                     State.LastNessie = "fighting, no spear"
                 end
             elseif State.NessieMode == "Ride" then
-                RideStop()
+                local own = State.RideOwner and State.RideOwner()
+                if not own then
+                    RideStop()
+                end
             end
             local hp, max = NessieShare()
             if hp and max then
@@ -3201,6 +3225,12 @@ pcall(function()
             if State.RaptorMode == "Ride" and not RideMounted() then
                 return
             end
+            if State.RaptorMode == "Ride" then
+                local own = State.RideOwner and State.RideOwner()
+                if own and own ~= "Raptor" then
+                    return
+                end
+            end
             local cf = RaptorPose()
             if cf then
                 local hrp = GetHRP()
@@ -3232,7 +3262,10 @@ task.spawn(function()
         if State.AutoRaptor then
             if RaptorPose() then
                 if State.RaptorMode == "Ride" then
-                    if RideToBoss(RaptorPose) then
+                    local own = State.RideOwner and State.RideOwner()
+                    if own and own ~= "Raptor" then
+                        State.LastRaptor = "wait " .. tostring(own)
+                    elseif RideToBoss(RaptorPose) then
                         State.LastRaptor = "riding"
                     else
                         State.LastRaptor = "riding: no mount"
@@ -3244,7 +3277,10 @@ task.spawn(function()
                     State.LastRaptor = "fighting, no spear"
                 end
             elseif State.RaptorMode == "Ride" then
-                RideStop()
+                local own = State.RideOwner and State.RideOwner()
+                if not own then
+                    RideStop()
+                end
             end
             local hp, max = nil, nil
             pcall(function()
@@ -3578,6 +3614,46 @@ State.AnyBossBusy = function()
     return ok and busy or false
 end
 
+-- single ride owner: first Ride-mode boss still fighting keeps the mount
+State.RideOwner = function()
+    local fights = {}
+    pcall(function()
+        if State.AutoBoss and State.BossMode == "Ride" and MosaPose() then
+            fights.Mosa = true
+        end
+    end)
+    pcall(function()
+        if State.AutoNessie and State.NessieMode == "Ride" and NessiePose() then
+            fights.Nessie = true
+        end
+    end)
+    pcall(function()
+        if State.AutoRaptor and State.RaptorMode == "Ride" and RaptorPose() then
+            fights.Raptor = true
+        end
+    end)
+    pcall(function()
+        if State.AutoTrue and State.TrueMode == "Ride" and TruePose() then
+            fights.True = true
+        end
+    end)
+    local any = fights.Mosa or fights.Nessie or fights.Raptor or fights.True
+    if not any then
+        State._rideOwner = nil
+        return nil
+    end
+    if State._rideOwner and fights[State._rideOwner] then
+        return State._rideOwner
+    end
+    for _, k in ipairs({ "Mosa", "Nessie", "Raptor", "True" }) do
+        if fights[k] then
+            State._rideOwner = k
+            return k
+        end
+    end
+    return nil
+end
+
 -- partner follow <-> dig handoff: restore while boss/summon owns HRP, re-dismiss after
 task.spawn(function()
     local prevBusy = false
@@ -3670,6 +3746,12 @@ pcall(function()
             if State.TrueMode == "Ride" and not RideMounted() then
                 return
             end
+            if State.TrueMode == "Ride" then
+                local own = State.RideOwner and State.RideOwner()
+                if own and own ~= "True" then
+                    return
+                end
+            end
             local cf = TruePose()
             if cf then
                 local hrp = GetHRP()
@@ -3698,7 +3780,10 @@ task.spawn(function()
         if State.AutoTrue then
             if TruePose() then
                 if State.TrueMode == "Ride" then
-                    if RideToBoss(TruePose) then
+                    local own = State.RideOwner and State.RideOwner()
+                    if own and own ~= "True" then
+                        State.LastTrue = "wait " .. tostring(own)
+                    elseif RideToBoss(TruePose) then
                         State.LastTrue = "riding"
                     else
                         State.LastTrue = "riding: no mount"
@@ -3710,7 +3795,10 @@ task.spawn(function()
                     State.LastTrue = "fighting, no spear"
                 end
             elseif State.TrueMode == "Ride" then
-                RideStop()
+                local own = State.RideOwner and State.RideOwner()
+                if not own then
+                    RideStop()
+                end
             end
             local hp, max = nil, nil
             pcall(function()
