@@ -1870,12 +1870,51 @@ task.spawn(function()
 end)
 
 
+local function DigPartnerId()
+    return tonumber(LocalPlayer:GetAttribute("PartnerId")) or 0
+end
+
+local function DismissPartnerForDig()
+    if State._savedPartnerId then
+        return
+    end
+    local pid = DigPartnerId()
+    if pid == 0 then
+        return
+    end
+    State._savedPartnerId = pid
+    State._fightRestored = false
+    pcall(function()
+        FTD:WaitForChild("Remotes").RanchRequest:InvokeServer("Partner", pid)
+    end)
+end
+
+local function RestorePartnerAfterDig()
+    local saved = State._savedPartnerId
+    State._savedPartnerId = nil
+    State._fightRestored = false
+    if not saved or saved == 0 then
+        return
+    end
+    if DigPartnerId() ~= 0 then
+        return
+    end
+    pcall(function()
+        FTD:WaitForChild("Remotes").RanchRequest:InvokeServer("Partner", saved)
+    end)
+end
+
 DigCard:AddToggle({
     Name = "Auto Dig",
     Name = "Auto Dig",    Flag = "DigCard_AutoDig",
     Default = false,
     Callback = function(v)
         State.AutoDig = v
+        if v then
+            task.spawn(DismissPartnerForDig)
+        else
+            task.spawn(RestorePartnerAfterDig)
+        end
     end
 })
 
@@ -2517,6 +2556,7 @@ local function RideToBoss(poseFn)
     if not cf then
         return false
     end
+    -- staging: wait near boss WITHOUT heartbeat lock (gated until mounted)
     local hrp = GetHRP()
     if hrp then
         hrp.AssemblyLinearVelocity = Vector3.zero
@@ -2539,22 +2579,20 @@ local function RideToBoss(poseFn)
         end
         task.wait(1)
     end
-    local t1 = os.clock()
-    while os.clock() - t1 < 15 do
-        local fld = workspace:FindFirstChild("FTD_Partners")
-        local pm = fld and fld:FindFirstChild("Partner_" .. LocalPlayer.Name)
-        local h = GetHRP()
-        if pm and h then
-            local ok, mcf = pcall(function()
-                return pm:GetPivot()
-            end)
-            if ok and (mcf.Position - h.Position).Magnitude < 45 then
-                break
+    local mounted = RideEnsure()
+    if mounted then
+        -- mounted: move above fresh boss pose, heartbeat lock takes over from here
+        pcall(function()
+            local now = poseFn()
+            local h = GetHRP()
+            if now and h then
+                h.AssemblyLinearVelocity = Vector3.zero
+                h.AssemblyAngularVelocity = Vector3.zero
+                h.CFrame = CFrame.new(now.Position + Vector3.new(0, 25, 0))
             end
-        end
-        task.wait(1)
+        end)
     end
-    return RideEnsure()
+    return mounted
 end
 
 local function RideStop()
@@ -2581,6 +2619,9 @@ pcall(function()
             return
         end
         if State.AutoBoss then
+            if State.BossMode == "Ride" and not RideMounted() then
+                return
+            end
             local ok, pos, look = pcall(BossHeadPos, "Mosa")
             if ok and pos then
                 local hrp = GetHRP()
@@ -2868,6 +2909,9 @@ pcall(function()
             return
         end
         if State.AutoNessie then
+            if State.NessieMode == "Ride" and not RideMounted() then
+                return
+            end
             local cf = NessiePose()
             if cf then
                 local hrp = GetHRP()
@@ -3154,6 +3198,9 @@ pcall(function()
             return
         end
         if State.AutoRaptor then
+            if State.RaptorMode == "Ride" and not RideMounted() then
+                return
+            end
             local cf = RaptorPose()
             if cf then
                 local hrp = GetHRP()
@@ -3246,33 +3293,7 @@ end
 task.spawn(function()
     while Gen == getgenv().VoltGen do
         task.wait(1)
-        if State.AutoRaptor then
-            pcall(function()
-                local st = FTD:GetAttribute("RaptorState")
-                if st ~= "Fight" then
-                    if State.AutoRaptorSummon then
-                        return
-                    end
-                    if State._raptorSummonBusy then
-                        return
-                    end
-                    if State._raptorSummonAt and os.clock() - State._raptorSummonAt < 90 then
-                        return
-                    end
-                    local ready = tonumber(FTD:GetAttribute("RaptorReadyAt")) or 0
-                    local now = workspace:GetServerTimeNow()
-                    if ready > 0 and ready - now < 20 then
-                        PreTeleport()
-                        local hrp = GetHRP()
-                        if hrp then
-                            hrp.AssemblyLinearVelocity = Vector3.zero
-                            hrp.AssemblyAngularVelocity = Vector3.zero
-                            hrp.CFrame = CFrame.new(RaptorSpawn)
-                        end
-                    end
-                end
-            end)
-        end
+        -- wait-at-arena removed: teleport only when fight starts (fight loops handle it)
         if State._raptorCd then
             pcall(function()
                 State._raptorCd:Set(RaptorCountdown())
@@ -3557,6 +3578,38 @@ State.AnyBossBusy = function()
     return ok and busy or false
 end
 
+-- partner follow <-> dig handoff: restore while boss/summon owns HRP, re-dismiss after
+task.spawn(function()
+    local prevBusy = false
+    while Gen == getgenv().VoltGen do
+        task.wait(1)
+        if State.AutoDig and State._savedPartnerId then
+            local busy = false
+            pcall(function()
+                busy = State.AnyBossBusy and State.AnyBossBusy() or false
+            end)
+            if busy and not prevBusy then
+                if DigPartnerId() == 0 then
+                    pcall(function()
+                        FTD:WaitForChild("Remotes").RanchRequest:InvokeServer("Partner", State._savedPartnerId)
+                    end)
+                    State._fightRestored = true
+                end
+            elseif not busy and prevBusy then
+                if State._fightRestored and DigPartnerId() ~= 0 then
+                    pcall(function()
+                        FTD:WaitForChild("Remotes").RanchRequest:InvokeServer("Partner", State._savedPartnerId)
+                    end)
+                    State._fightRestored = false
+                end
+            end
+            prevBusy = busy
+        else
+            prevBusy = false
+        end
+    end
+end)
+
 local function TrueSpearOk()
     local ch = LocalPlayer.Character
     if not ch then
@@ -3614,6 +3667,9 @@ pcall(function()
             return
         end
         if State.AutoTrue then
+            if State.TrueMode == "Ride" and not RideMounted() then
+                return
+            end
             local cf = TruePose()
             if cf then
                 local hrp = GetHRP()
@@ -3703,24 +3759,7 @@ end
 task.spawn(function()
     while Gen == getgenv().VoltGen do
         task.wait(1)
-        if State.AutoTrue then
-            pcall(function()
-                local st = FTD:GetAttribute("TrueState")
-                if st ~= "Fight" then
-                    local nxt = tonumber(FTD:GetAttribute("TrueNext")) or 0
-                    local now = workspace:GetServerTimeNow()
-                    if nxt > 0 and nxt - now < 30 then
-                        PreTeleport()
-                        local hrp = GetHRP()
-                        if hrp then
-                            hrp.AssemblyLinearVelocity = Vector3.zero
-                            hrp.AssemblyAngularVelocity = Vector3.zero
-                            hrp.CFrame = CFrame.new(TrueWait)
-                        end
-                    end
-                end
-            end)
-        end
+        -- wait-at-arena removed: teleport only when fight starts (fight loops handle it)
         if State._trueCd then
             pcall(function()
                 State._trueCd:Set(TrueCountdown())
