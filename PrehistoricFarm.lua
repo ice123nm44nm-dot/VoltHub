@@ -3909,9 +3909,13 @@ task.spawn(function()
                     local bg = map and map:FindFirstChild("Blackgate", true)
                     local gar = bg and bg:FindFirstChild("Garage", true)
                     local lc = gar and gar:FindFirstChild("LockConsole", true)
-                    local pp = lc and lc:FindFirstChild("PromptPart", true)
-                    if pp and pp:IsA("BasePart") then
-                        consolePos = pp.Position
+                    if lc then
+                        local pp = lc:FindFirstChild("PromptPart", true)
+                        if pp and pp:IsA("BasePart") then
+                            consolePos = pp.Position
+                        else
+                            consolePos = lc:GetPivot().Position
+                        end
                     end
                 end)
                 if not consolePos then
