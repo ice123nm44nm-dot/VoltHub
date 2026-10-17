@@ -944,13 +944,74 @@ end
 
 local ZonePresets = {
     PacificDeep = Vector3.new(-4300, -150, -150),
-    Whirlpool = Vector3.new(-1900, 5, 1390),
-    NessiePillar = Vector3.new(3706, 23, 3300),
 }
+
+-- live positions: the map moves between updates, so read them from the game instead of hardcoding
+local function NessiePillarPos()
+    local pos = nil
+    local function look()
+        pcall(function()
+            local map = workspace:FindFirstChild("Map")
+            local myst = map and map:FindFirstChild("Mystery", true)
+            local pil = myst and myst:FindFirstChild("Pillar", true)
+            local pp = pil and pil:FindFirstChild("PromptPart", true)
+            if pp and pp:IsA("BasePart") then
+                pos = pp.Position
+            end
+        end)
+    end
+    look()
+    if pos then
+        return pos
+    end
+    -- streaming: the pillar is unloaded when far away, so ask for it and read the real position
+    local anchor = nil
+    pcall(function()
+        anchor = FTD:GetAttribute("NessieCenter")
+    end)
+    if not anchor then
+        anchor = Vector3.new(4736, 0, 4224)
+    end
+    pcall(function()
+        LocalPlayer:RequestStreamAroundAsync(anchor, 5)
+    end)
+    local t0 = os.clock()
+    while os.clock() - t0 < 6 do
+        look()
+        if pos then
+            break
+        end
+        task.wait(0.25)
+    end
+    return pos
+end
+
+local function WhirlpoolPos()
+    local pos = nil
+    pcall(function()
+        local fp = workspace:FindFirstChild("FTD_Pacific")
+        local dp = fp and fp:FindFirstChild("DivePrompt")
+        local part = dp and (dp:IsA("BasePart") and dp or dp:FindFirstChildWhichIsA("BasePart", true))
+        if part then
+            pos = part.Position
+        end
+    end)
+    return pos
+end
+
+local function ResolvePreset(zoneKey)
+    if zoneKey == "NessiePillar" then
+        return NessiePillarPos()
+    end
+    if zoneKey == "Whirlpool" then
+        return WhirlpoolPos()
+    end
+    return ZonePresets[zoneKey]
+end
 
 local function SafeTeleportZone(zoneKey)
     local cx, cz, hoverY = nil, nil, 120
-    local pre = ZonePresets[zoneKey]
+    local pre = ResolvePreset(zoneKey)
     if pre then
         local hrp0 = GetHRP()
         if not hrp0 then
@@ -1236,6 +1297,9 @@ local function IsElder(dino)
     return elder
 end
 
+local FeedHold = {}
+local FeedHoldTime = 2
+
 local function TryFeedOnce()
     if not State.AutoFeed then
         return
@@ -1243,25 +1307,30 @@ local function TryFeedOnce()
     local list = DecodeAttr("Creatures", {})
     local stock = FoodStock()
     for _, dino in ipairs(list) do
-        if type(dino) == "table" and dino.Placed == true and dino.Id and not IsElder(dino) and LiveFed(dino) < 0.6 then
+        if not State.AutoFeed then
+            return
+        end
+        local dinoId = type(dino) == "table" and dino.Id or nil
+        local held = dinoId and FeedHold[tostring(dinoId)] or nil
+        if dinoId and dino.Placed == true and not IsElder(dino) and LiveFed(dino) < 0.6 and not (held and os.clock() - held < FeedHoldTime) then
             local item = dino.Species and PickFood(dino.Species, stock)
-            State.LastFeed = "try:" .. tostring(dino.Id) .. ":" .. tostring(item)
+            State.LastFeed = "try:" .. tostring(dinoId) .. ":" .. tostring(item)
             if item then
                 local shop = FTD:WaitForChild("Remotes")
                 local res = nil
                 local ok = pcall(function()
-                    res = shop.RanchRequest:InvokeServer("Feed", dino.Id, item)
+                    res = shop.RanchRequest:InvokeServer("Feed", dinoId, item)
                 end)
-                if ok and res and res.reason == "Slow down" then
-                    task.wait(5)
-                    return
-                end
-                task.wait(2)
                 if ok and res and res.ok then
-                    State.LastFeed = "fed:" .. tostring(dino.Id) .. ":" .. tostring(item)
+                    FeedHold[tostring(dinoId)] = os.clock()
+                    stock = FoodStock()
+                    State.LastFeed = "fed:" .. tostring(dinoId) .. ":" .. tostring(item)
+                elseif ok and res and res.reason == "Slow down" then
+                    task.wait(1.2)
                     return
+                else
+                    State.LastFeed = "fail:" .. tostring(dinoId) .. ":" .. tostring(res and res.reason)
                 end
-                State.LastFeed = "fail:" .. tostring(dino.Id) .. ":" .. tostring(res and res.reason)
             end
         end
     end
@@ -1280,7 +1349,7 @@ end)
 task.spawn(function()
     task.wait(2)
     while Gen == getgenv().VoltGen do
-        task.wait(6)
+        task.wait(1)
         if State.AutoFeed then
             pcall(TryFeedOnce)
         end
@@ -2811,9 +2880,6 @@ task.spawn(function()
     end
 end)
 
-local NessieCenter = Vector3.new(3700, 0, 3300)
-local NessiePillar = Vector3.new(3706, 23, 3300)
-
 local function NessiePose()
     if DinoCombatCache == nil then
         pcall(function()
@@ -3085,10 +3151,20 @@ task.spawn(function()
                 if not hrp then
                     return
                 end
+                local pillarPos = NessiePillarPos()
+                if not pillarPos then
+                    State.LastNessie = "summon: pillar not loaded"
+                    if State._nessieSt then
+                        pcall(function()
+                            State._nessieSt:Set(State.LastNessie)
+                        end)
+                    end
+                    return
+                end
                 PreTeleport()
                 hrp.AssemblyLinearVelocity = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
-                hrp.CFrame = CFrame.new(NessiePillar)
+                hrp.CFrame = CFrame.new(pillarPos)
                 State._nessieSummonBusy = true
                 task.wait(1)
                 local map = workspace:FindFirstChild("Map")
@@ -3903,23 +3979,53 @@ task.spawn(function()
                 if not hrp then
                     return
                 end
-                local consolePos = nil
-                pcall(function()
-                    local map = workspace:FindFirstChild("Map")
-                    local bg = map and map:FindFirstChild("Blackgate", true)
-                    local gar = bg and bg:FindFirstChild("Garage", true)
-                    local lc = gar and gar:FindFirstChild("LockConsole", true)
-                    if lc then
-                        local pp = lc:FindFirstChild("PromptPart", true)
+                -- streaming: LockConsole parts unload when we are away, so only trust a loaded PromptPart
+                local function ConsolePos()
+                    local pos = nil
+                    pcall(function()
+                        local map = workspace:FindFirstChild("Map")
+                        local bg = map and map:FindFirstChild("Blackgate", true)
+                        local gar = bg and bg:FindFirstChild("Garage", true)
+                        local lc = gar and gar:FindFirstChild("LockConsole", true)
+                        local pp = lc and lc:FindFirstChild("PromptPart", true)
                         if pp and pp:IsA("BasePart") then
-                            consolePos = pp.Position
-                        else
-                            consolePos = lc:GetPivot().Position
+                            pos = pp.Position
                         end
-                    end
-                end)
+                    end)
+                    return pos
+                end
+                local consolePos = ConsolePos()
                 if not consolePos then
-                    consolePos = Vector3.new(-600, 6, 2955)
+                    -- ask the server to stream the area in (we do not move yet), then read the real position
+                    local anchor = Vector3.new(-900, 0, 4350)
+                    pcall(function()
+                        if Config.Zones and Config.Zones.Blackgate and Config.Zones.Blackgate.Center then
+                            anchor = Config.Zones.Blackgate.Center
+                        end
+                    end)
+                    pcall(function()
+                        LocalPlayer:RequestStreamAroundAsync(anchor, 5)
+                    end)
+                    local tLoad = os.clock()
+                    while os.clock() - tLoad < 6 do
+                        if not State.AutoRaptorSummon then
+                            return
+                        end
+                        consolePos = ConsolePos()
+                        if consolePos then
+                            break
+                        end
+                        task.wait(0.25)
+                    end
+                end
+                if not consolePos then
+                    State.LastRaptor = "summon: console not loaded"
+                    if State._raptorSt then
+                        pcall(function()
+                            State._raptorSt:Set(State.LastRaptor)
+                        end)
+                    end
+                    return
                 end
                 State._raptorSummonBusy = true
                 PreTeleport()
