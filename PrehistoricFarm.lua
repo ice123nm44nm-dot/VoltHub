@@ -242,6 +242,239 @@ local function MashNeed(layer, quality)
     return 10
 end
 
+-- The game's own dig controller keeps the live dig phase and the quality the meter is
+-- currently sitting in as upvalues. Reading them means the hold can be released the moment
+-- the game itself reports Perfect, and the mash can stop the moment the game leaves Mash,
+-- instead of guessing both from a timer. The slots are found by their values, so a game
+-- update that renumbers them does not break it; if anything cannot be read we fall back to
+-- the old fixed timings.
+local DigRefs = nil
+
+local function DigScan()
+    if DigRefs == false then
+        return nil
+    end
+    if DigRefs then
+        return DigRefs
+    end
+    local ok, refs = pcall(function()
+        local folder = LocalPlayer:FindFirstChild("PlayerScripts")
+        folder = folder and folder:FindFirstChild("FTD_Controllers")
+        local mod = folder and folder:FindFirstChild("DigController")
+        if not mod then
+            return nil
+        end
+        local M = require(mod)
+        local press = M and M.Press
+        if typeof(press) ~= "function" then
+            return nil
+        end
+        local outer = debug.getupvalues(press)
+        if not outer then
+            return nil
+        end
+        local inner = nil
+        for i = 1, 16 do
+            if typeof(outer[i]) == "function" then
+                inner = outer[i]
+                break
+            end
+        end
+        if not inner then
+            return nil
+        end
+        local up = debug.getupvalues(inner)
+        if not up then
+            return nil
+        end
+        local states = { Idle = true, Holding = true, Mash = true, Swing = true, Ready = true, Resolving = true }
+        local quals = { Weak = true, Good = true, Great = true, Perfect = true }
+        local sIdx, qIdx = nil, nil
+        for i = 1, 96 do
+            local v = up[i]
+            if type(v) == "string" then
+                if not sIdx and states[v] then
+                    sIdx = i
+                elseif not qIdx and quals[v] then
+                    qIdx = i
+                end
+            end
+        end
+        if not sIdx and not qIdx then
+            return nil
+        end
+        return { fn = inner, s = sIdx, q = qIdx }
+    end)
+    DigRefs = (ok and refs) or false
+    return DigRefs or nil
+end
+
+local function DigRead()
+    local refs = DigScan()
+    if not refs then
+        return nil, nil
+    end
+    local ok, st, q = pcall(function()
+        local up = debug.getupvalues(refs.fn)
+        return up[refs.s], up[refs.q]
+    end)
+    if not ok then
+        DigRefs = false
+        return nil, nil
+    end
+    return st, q
+end
+
+local function DigState()
+    local st = DigRead()
+    return st
+end
+
+local function DigQuality()
+    local _, q = DigRead()
+    return q
+end
+
+local function DigMaxHold()
+    local ok, v = pcall(function()
+        return Config.Dig and Config.Dig.MaxHold
+    end)
+    if ok and type(v) == "number" then
+        return v
+    end
+    return 5
+end
+
+local function DigRelease(tool)
+    pcall(function()
+        local t = tool or GetTool()
+        if t then
+            t:Deactivate()
+        end
+    end)
+end
+
+-- Walk the meter until the game reports the Perfect band, then let go. No fixed hold time.
+local function HoldToPerfect(holdTime)
+    if DigState() == nil then
+        local t = GetTool()
+        if t then
+            t:Activate()
+        end
+        task.wait(holdTime)
+        DigRelease(t)
+        return true
+    end
+    local tool = GetTool()
+    if not tool then
+        return false
+    end
+    tool:Activate()
+    local limit = os.clock() + DigMaxHold() - 0.4
+    local enterLimit = os.clock() + 0.8
+    local entered = false
+    while os.clock() < limit do
+        if not State.AutoDig or (State.AnyBossBusy and State.AnyBossBusy()) then
+            break
+        end
+        local st = DigState()
+        if st == nil then
+            break
+        end
+        if st == "Holding" then
+            entered = true
+            if DigQuality() == "Perfect" then
+                break
+            end
+        elseif st == "Mash" or st == "Resolving" then
+            break
+        elseif entered or os.clock() > enterLimit then
+            break
+        end
+        task.wait()
+    end
+    if DigState() == "Holding" then
+        pcall(function()
+            tool:Deactivate()
+        end)
+    end
+    return true
+end
+
+-- Keep pressing until the game leaves the Mash phase, with a hard cap so a broken phase
+-- can never spin forever. Presses are only ever sent while the game is genuinely mashing.
+local function MashToDone(layer, quality)
+    local st = DigState()
+    if st == nil then
+        local need = MashNeed(layer, quality)
+        for _ = 1, need do
+            if not State.AutoDig or (State.AnyBossBusy and State.AnyBossBusy()) then
+                return false
+            end
+            local t = GetTool()
+            if t then
+                t:Activate()
+            end
+            task.wait(0.07)
+        end
+        task.wait(2.2)
+        return true
+    end
+    local waitLimit = os.clock() + 0.9
+    while os.clock() < waitLimit do
+        if st == "Mash" or st == "Swing" or st == "Ready" or st == "Idle" or st == "Resolving" then
+            break
+        end
+        task.wait()
+        st = DigState()
+    end
+    if st ~= "Mash" then
+        return true
+    end
+    -- the game only opens the mash window ~0.2s in; presses before that are ignored
+    task.wait(0.2)
+    local cap = os.clock() + 5.5
+    local pressed = 0
+    while st == "Mash" and pressed < 140 and os.clock() < cap do
+        if not State.AutoDig or (State.AnyBossBusy and State.AnyBossBusy()) then
+            return false
+        end
+        local t = GetTool()
+        if t then
+            t:Activate()
+            pressed = pressed + 1
+        end
+        task.wait(0.05)
+        st = DigState()
+    end
+    return true
+end
+
+-- One layer: hold to Perfect, mash it through, then let the game settle. "Swing" means the
+-- layer passed and another layer is coming; "Resolving"/"Idle" means the dig is over.
+local function DigOneLayer(layer, quality, holdTime)
+    if DigState() == "Mash" then
+        MashToDone(layer, quality)
+    else
+        if not HoldToPerfect(holdTime) then
+            return false
+        end
+        MashToDone(layer, quality)
+    end
+    local limit = os.clock() + 2.0
+    while os.clock() < limit do
+        local s = DigState()
+        if s == nil or s == "Swing" or s == "Ready" or s == "Holding" or s == "Idle" or s == "Resolving" then
+            break
+        end
+        if not State.AutoDig then
+            return false
+        end
+        task.wait(0.05)
+    end
+    return true
+end
+
 local function PreTeleport()
     pcall(function()
         local folder = LocalPlayer:WaitForChild("PlayerScripts"):WaitForChild("FTD_Controllers")
@@ -390,43 +623,13 @@ local function DigOneSite(site, quality, holdTime)
         if State.AnyBossBusy and State.AnyBossBusy() then
             return false
         end
-        local tool = GetTool()
-        if not tool then
+        local before = DigState()
+        if layer > 1 and (before == "Idle" or before == "Resolving") then
+            return true
+        end
+        if not DigOneLayer(layer, quality, holdTime) then
             return false
         end
-        tool:Activate()
-        task.wait(holdTime)
-        if not State.AutoDig then
-            pcall(function()
-                tool:Deactivate()
-            end)
-            return false
-        end
-        if State.AnyBossBusy and State.AnyBossBusy() then
-            pcall(function()
-                tool:Deactivate()
-            end)
-            return false
-        end
-        pcall(function()
-            tool:Deactivate()
-        end)
-        task.wait(0.4)
-        local need = MashNeed(layer, quality)
-        for i = 1, need do
-            if not State.AutoDig then
-                return false
-            end
-            if State.AnyBossBusy and State.AnyBossBusy() then
-                return false
-            end
-            local t = GetTool()
-            if t then
-                t:Activate()
-            end
-            task.wait(0.07)
-        end
-        task.wait(2.2)
     end
     return true
 end
@@ -508,9 +711,20 @@ task.spawn(function()
     while Gen == getgenv().VoltGen do
         task.wait(0.25)
         if not State.AutoDig then
+            State._digBusy = false
+            continue
+        end
+        if State._fragWarp then
             continue
         end
         if State.AnyBossBusy and State.AnyBossBusy() then
+            State._digBusy = false
+            continue
+        end
+        if DigState() == "Resolving" then
+            -- the previous dig is still revealing; leave it alone
+            State._digBusy = false
+            task.wait(1)
             continue
         end
         local island = State.DigIsland
@@ -537,12 +751,15 @@ task.spawn(function()
         if #sites == 0 then
             local center = IslandCenter(island)
             if center then
+                State._digBusy = true
                 Teleport(center)
+                State._digBusy = false
             end
             task.wait(2)
             continue
         end
         local target = sites[1]
+        State._digBusy = true
         if target.Dist > 11 then
             local hrp = GetHRP()
             if hrp then
@@ -558,6 +775,7 @@ task.spawn(function()
         pcall(function()
             DigOneSite(target.Model, quality, holdTime)
         end)
+        State._digBusy = false
         task.wait(0.3)
     end
 end)
@@ -3076,19 +3294,48 @@ local function FindPrompt(root, action)
     return nil
 end
 
+local function FindFragModel(deep)
+    local holder = workspace:FindFirstChild("FTD_Pacific")
+    local model = holder and holder:FindFirstChild("FTD_NessieFragment")
+    if model then
+        return model
+    end
+    if deep then
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d.Name == "FTD_NessieFragment" then
+                return d
+            end
+        end
+    end
+    return nil
+end
+
 task.spawn(function()
+    local fragDirty = false
+    local fragConns = {}
+    pcall(function()
+        for _, attr in ipairs({ "NessieId", "NessiePos", "NessieUntil" }) do
+            fragConns[#fragConns + 1] = FTD:GetAttributeChangedSignal(attr):Connect(function()
+                fragDirty = true
+            end)
+        end
+    end)
+    local lastSweep = os.clock()
     while Gen == getgenv().VoltGen do
-        task.wait(8)
-        if State.AutoFarmFrag then
+        task.wait(0.2)
+        if not fragDirty and (os.clock() - lastSweep) < 2 then
+            continue
+        end
+        fragDirty = false
+        lastSweep = os.clock()
+        if State.AutoFarmFrag and not State._digBusy and not State._nessieSummonBusy then
+            State._fragWarp = true
             pcall(function()
-                if NessieFrags() >= 12 then
-                    return
-                end
                 local pos = FTD:GetAttribute("NessiePos")
-                local untilT = FTD:GetAttribute("NessieUntil")
+                local untilT = tonumber(FTD:GetAttribute("NessieUntil")) or 0
                 local id = FTD:GetAttribute("NessieId")
                 local now = workspace:GetServerTimeNow()
-                if typeof(pos) ~= "Vector3" or (tonumber(untilT) or 0) <= now then
+                if typeof(pos) ~= "Vector3" or untilT <= now then
                     return
                 end
                 local got = nil
@@ -3097,6 +3344,12 @@ task.spawn(function()
                     got = data and data.NessieGot
                 end)
                 if got == id then
+                    return
+                end
+                if State._fragFailId ~= id then
+                    State._fragFailId = id
+                    State._fragFail = 0
+                elseif (State._fragFail or 0) >= 3 then
                     return
                 end
                 local hrp = GetHRP()
@@ -3109,30 +3362,48 @@ task.spawn(function()
                 hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
                 task.wait(1)
                 local fragBefore = NessieFrags()
-                for _, d in ipairs(workspace:GetDescendants()) do
-                    if d.Name == "FTD_NessieFragment" then
-                        local pr = FindPrompt(d, "Take")
-                        if pr then
-                            pcall(function()
-                                fireproximityprompt(pr)
-                            end)
-                            task.wait(2)
+                local fragPrompt = nil
+                local fragModel = FindFragModel(true)
+                for _ = 1, 10 do
+                    if fragModel then
+                        fragPrompt = FindPrompt(fragModel, "Take")
+                        if fragPrompt then
+                            break
                         end
+                    end
+                    if NessieFrags() > fragBefore then
                         break
                     end
+                    task.wait(0.3)
+                    fragModel = FindFragModel()
+                end
+                if fragPrompt then
+                    pcall(function()
+                        fireproximityprompt(fragPrompt)
+                    end)
+                    task.wait(1.5)
                 end
                 local fragAfter = NessieFrags()
                 if fragAfter > fragBefore then
-                    WebhookSend("🟣 Nessie Fragment (" .. tostring(fragAfter) .. "/12)")
+                    State._fragFail = 0
+                    WebhookSend("🟣 Nessie Fragment (มี " .. tostring(fragAfter) .. " ชิ้น)")
+                else
+                    State._fragFail = (State._fragFail or 0) + 1
                 end
-                State.LastNessie = "frag:" .. tostring(NessieFrags()) .. "/12"
+                State.LastNessie = "frag:" .. tostring(NessieFrags())
                 if State._nessieSt then
                     pcall(function()
                         State._nessieSt:Set(State.LastNessie)
                     end)
                 end
             end)
+            State._fragWarp = false
         end
+    end
+    for _, c in ipairs(fragConns) do
+        pcall(function()
+            c:Disconnect()
+        end)
     end
 end)
 
