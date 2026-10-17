@@ -3,6 +3,17 @@ local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/ice12
 local Gen = (getgenv().VoltGen or 0) + 1
 getgenv().VoltGen = Gen
 
+-- Close the window from the previous run first. Its auto-save loop would otherwise
+-- keep writing the config file every 10s and overwrite the settings you just changed.
+if getgenv().VoltWin then
+    pcall(function()
+        if type(getgenv().VoltWin.Destroy) == "function" then
+            getgenv().VoltWin:Destroy()
+        end
+    end)
+    getgenv().VoltWin = nil
+end
+
 local Win = Library:CreateWindow({
     Title = "Volt",
     TitleAccent = "ScriptZ",
@@ -10,6 +21,7 @@ local Win = Library:CreateWindow({
     Name = "VoltScriptZ",
     Logo = "rbxassetid://100712256015627"
 })
+getgenv().VoltWin = Win
 
 Win:AddSection("General")
 local MainTab = Win:AddTab({ Name = "Main" })
@@ -84,7 +96,6 @@ local State = {
     FishNeedSpot = false,
     AutoNest = false,
     NestTarget = "All",
-    LastNest = "",
     AutoBoss = false,
     BossTarget = "Mosa",
     BossAim = "Head",
@@ -105,18 +116,19 @@ local State = {
     RaptorMode = "Throw",
     LastRaptor = "",
     AutoRaptorSummon = false,
+    AutoHopRaptor = false,
+    AutoExe = true,
+    AutoSkipIntro = true,
     AutoTrue = false,
     TrueAim = "Head",
     TrueH = 0,
     TrueMode = "Throw",
     LastTrue = "",
     BlackScreen = false,
-    LowQ = false,
     FpsLock = false,
     FpsCap = 60,
     StreamMode = false,
     AntiAFK = true,
-    UiScale = 100,
 }
 getgenv().VoltDig = State
 
@@ -369,10 +381,8 @@ local function HoldToPerfect(holdTime)
     if not tool then
         return false
     end
-    tool:Activate()
     local limit = os.clock() + DigMaxHold() - 0.4
-    local enterLimit = os.clock() + 0.8
-    local entered = false
+    local pressAt = 0
     while os.clock() < limit do
         if not State.AutoDig or (State.AnyBossBusy and State.AnyBossBusy()) then
             break
@@ -382,14 +392,25 @@ local function HoldToPerfect(holdTime)
             break
         end
         if st == "Holding" then
-            entered = true
             if DigQuality() == "Perfect" then
                 break
             end
         elseif st == "Mash" or st == "Resolving" then
             break
-        elseif entered or os.clock() > enterLimit then
-            break
+        elseif os.clock() >= pressAt then
+            -- Between layers the game sits on "Swing"/"Ready" and waits for a fresh press,
+            -- and it ignores a press made while the tool is still held from the last mash.
+            -- Release first, press again, and keep retrying: giving up here makes the hub
+            -- walk to the next hole, which cancels the pending layer and shows
+            -- "You walked away - the hole filled back in.".
+            pcall(function()
+                tool:Deactivate()
+            end)
+            task.wait()
+            pcall(function()
+                tool:Activate()
+            end)
+            pressAt = os.clock() + 0.25
         end
         task.wait()
     end
@@ -447,6 +468,9 @@ local function MashToDone(layer, quality)
         task.wait(0.05)
         st = DigState()
     end
+    -- Leave the tool released. If it stays held, the game ignores the press that starts
+    -- the next layer and the pending layer dies with "You walked away...".
+    DigRelease()
     return true
 end
 
@@ -558,6 +582,33 @@ local function GetSites(island)
     return list
 end
 
+-- The hole the player is standing on, ignoring island and the Busy flag, so an unfinished
+-- dig can always be finished before the hub walks away from it.
+local function NearestSiteAny()
+    local hrp = GetHRP()
+    if not hrp then
+        return nil
+    end
+    local best, bestD, bestPos = nil, math.huge, nil
+    for _, m in pairs(CollectionService:GetTagged("FTD_DigSite")) do
+        if m:IsA("Model") and m.Parent then
+            local ok, pivot = pcall(function()
+                return m:GetPivot()
+            end)
+            if ok and pivot then
+                local d = (pivot.Position - hrp.Position).Magnitude
+                if d < bestD then
+                    bestD, best, bestPos = d, m, pivot.Position
+                end
+            end
+        end
+    end
+    if best then
+        return { Model = best, Dist = bestD, Pos = bestPos }
+    end
+    return nil
+end
+
 local function Teleport(pos, lookAt)
     local hrp = GetHRP()
     if not hrp or not pos then
@@ -588,7 +639,12 @@ local function Teleport(pos, lookAt)
 end
 
 local function DigOneSite(site, quality, holdTime)
-    for layer = 1, 3 do
+    -- A hole can be three layers deep and every layer past the first needs its own hold, so
+    -- keep working while the game still reports a hole in progress instead of counting to
+    -- three blindly. Stopping early is what makes the hub walk off in the middle of a dig.
+    local layer = 0
+    local guard = os.clock() + 25
+    while layer < 6 and os.clock() < guard do
         if not State.AutoDig then
             return false
         end
@@ -623,10 +679,13 @@ local function DigOneSite(site, quality, holdTime)
         if State.AnyBossBusy and State.AnyBossBusy() then
             return false
         end
-        local before = DigState()
-        if layer > 1 and (before == "Idle" or before == "Resolving") then
-            return true
+        if layer > 0 then
+            local before = DigState()
+            if before == "Idle" or before == "Resolving" then
+                return true
+            end
         end
+        layer = layer + 1
         if not DigOneLayer(layer, quality, holdTime) then
             return false
         end
@@ -708,6 +767,8 @@ local function TryBuyShovel()
 end
 
 task.spawn(function()
+    -- how many times in a row the hub refused to walk away from a hole still being dug
+    local liveResumes = 0
     while Gen == getgenv().VoltGen do
         task.wait(0.25)
         if not State.AutoDig then
@@ -760,6 +821,25 @@ task.spawn(function()
         end
         local target = sites[1]
         State._digBusy = true
+        -- Walking out of range of a hole cancels the dig ("You walked away - the hole filled
+        -- back in."), so if the game still reports an unfinished hole, finish it first.
+        local live = DigState()
+        live = live == "Swing" or live == "Ready" or live == "Holding" or live == "Mash"
+        if live and liveResumes < 2 then
+            local here = NearestSiteAny()
+            if here and here.Dist <= 18 then
+                liveResumes = liveResumes + 1
+                pcall(function()
+                    DigOneSite(here.Model, quality, holdTime)
+                end)
+                State._digBusy = false
+                task.wait(0.2)
+                continue
+            end
+        end
+        if not live then
+            liveResumes = 0
+        end
         if target.Dist > 11 then
             local hrp = GetHRP()
             if hrp then
@@ -1532,7 +1612,6 @@ local function TryFeedOnce()
         local held = dinoId and FeedHold[tostring(dinoId)] or nil
         if dinoId and dino.Placed == true and not IsElder(dino) and LiveFed(dino) < 0.6 and not (held and os.clock() - held < FeedHoldTime) then
             local item = dino.Species and PickFood(dino.Species, stock)
-            State.LastFeed = "try:" .. tostring(dinoId) .. ":" .. tostring(item)
             if item then
                 local shop = FTD:WaitForChild("Remotes")
                 local res = nil
@@ -1542,12 +1621,9 @@ local function TryFeedOnce()
                 if ok and res and res.ok then
                     FeedHold[tostring(dinoId)] = os.clock()
                     stock = FoodStock()
-                    State.LastFeed = "fed:" .. tostring(dinoId) .. ":" .. tostring(item)
                 elseif ok and res and res.reason == "Slow down" then
                     task.wait(1.2)
                     return
-                else
-                    State.LastFeed = "fail:" .. tostring(dinoId) .. ":" .. tostring(res and res.reason)
                 end
             end
         end
@@ -1710,8 +1786,6 @@ task.spawn(function()
     end
 end)
 
-local FishSpot = Vector3.new(0, 4, 330)
-
 local function EquipRod()
     local char = LocalPlayer.Character
     if not char then
@@ -1796,13 +1870,11 @@ local function TryFishOnce()
         return
     end
     if not cast.ok then
-        State.LastFish = "cast:" .. tostring(cast.reason)
         if cast.reason == "Slow down" then
             task.wait(5)
         elseif cast.reason == "Already fishing" then
             task.wait(4)
         elseif cast.reason == "Cast into the open sea!" then
-            State.LastFish = "cast:need-water"
             task.wait(10)
         end
         return
@@ -1834,7 +1906,6 @@ local function TryFishOnce()
         land = remotes.FishRequest:InvokeServer("Land", cast.session, 0)
     end)
     if not landOk or type(land) ~= "table" or not land.ok then
-        State.LastFish = "land:" .. tostring(land and land.reason or "fail")
         if land and land.reason == "Slow down" then
             task.wait(5)
         end
@@ -1868,7 +1939,6 @@ local function TryFishOnce()
     local finOk, finRes = pcall(function()
         return remotes.FishRequest:InvokeServer("Finish", cast.session, picks)
     end)
-    State.LastFish = "fin:" .. tostring(finOk) .. ":" .. tostring(finRes and finRes.ok) .. ":" .. tostring(finRes and (finRes.reason or #finRes.fish))
     if finOk and finRes and finRes.ok then
         pcall(function()
             local d = game:GetService("HttpService"):JSONDecode(LocalPlayer:GetAttribute("Rudeus") or "")
@@ -1967,28 +2037,6 @@ local function WaitStole(timeout)
         task.wait(0.2)
     end
     return nil
-end
-
-local function WaitChase(timeout)
-    local t0 = os.clock()
-    while os.clock() - t0 < (timeout or 12) do
-        if not State.AutoNest then
-            return false
-        end
-        local moms = workspace:FindFirstChild("FTD_NestMothers")
-        if moms then
-            for _, mp in ipairs(moms:GetChildren()) do
-                if mp:GetAttribute("State") == "Chase" then
-                    local tgt = mp:GetAttribute("Target")
-                    if tgt == LocalPlayer.Name or (tgt ~= nil and tgt ~= "") then
-                        return true
-                    end
-                end
-            end
-        end
-        task.wait(0.2)
-    end
-    return false
 end
 
 local function WaitVerdict(timeout)
@@ -2112,7 +2160,6 @@ local function TryNestOnce(id)
     if not stole then
         return "fail"
     end
-    State.LastNest = "Stole " .. tostring(stole.A)
     local h2 = GetHRP()
     if not h2 then
         return "fail"
@@ -2127,11 +2174,9 @@ local function TryNestOnce(id)
     GlideNestEscape(nestPos, away, leash + 20, 70)
     local verdict = WaitVerdict(15)
     if verdict and verdict.Kind == "Escaped" then
-        State.LastNest = "Escaped " .. tostring(verdict.A) .. " +" .. tostring(verdict.B) .. "xp"
         return "escaped"
     end
     if verdict then
-        State.LastNest = tostring(verdict.Kind)
         return string.lower(tostring(verdict.Kind))
     end
     return "fail"
@@ -2505,8 +2550,8 @@ BossCard:AddDropdown({
 BossCard:AddSlider({
     Name = "Height Offset",
     Name = "Height Offset",    Flag = "BossCard_HeightOffset",
-    Min = -15,
-    Max = 30,
+    Min = -90,
+    Max = 90,
     Increment = 1,
     Default = 0,
     Callback = function(v)
@@ -2575,8 +2620,8 @@ NessieCard:AddDropdown({
 NessieCard:AddSlider({
     Name = "Height Offset",
     Name = "Height Offset",    Flag = "NessieCard_HeightOffset",
-    Min = -15,
-    Max = 30,
+    Min = -90,
+    Max = 90,
     Increment = 1,
     Default = 0,
     Callback = function(v)
@@ -2605,9 +2650,28 @@ RaptorCard:AddToggle({
 
 RaptorCard:AddToggle({
     Name = "Auto Summon",
+    Flag = "RaptorCard_AutoSummon",
     Default = false,
     Callback = function(v)
         State.AutoRaptorSummon = v
+    end
+})
+
+RaptorCard:AddToggle({
+    Name = "Auto Hop",
+    Flag = "RaptorCard_AutoHop",
+    Default = false,
+    Callback = function(v)
+        State.AutoHopRaptor = v
+        if not v then
+            State._hopCount = 0
+            State._hopNext = 0
+            if State._raptorHop then
+                pcall(function()
+                    State._raptorHop:Set("-")
+                end)
+            end
+        end
     end
 })
 
@@ -2634,8 +2698,8 @@ RaptorCard:AddDropdown({
 RaptorCard:AddSlider({
     Name = "Height Offset",
     Name = "Height Offset",    Flag = "RaptorCard_HeightOffset",
-    Min = -15,
-    Max = 30,
+    Min = -90,
+    Max = 90,
     Increment = 1,
     Default = 0,
     Callback = function(v)
@@ -2646,6 +2710,7 @@ RaptorCard:AddSlider({
 State._raptorHp = RaptorCard:AddInfo({ Text = "HP", Value = "-" })
 State._raptorSt = RaptorCard:AddInfo({ Text = "Status", Value = "idle" })
 State._raptorCd = RaptorCard:AddInfo({ Text = "Key Ready In", Value = "-" })
+State._raptorHop = RaptorCard:AddInfo({ Text = "Hop", Value = "-" })
 
 local TrueCard = BossTab:AddCard({
     Title = "True",
@@ -2686,8 +2751,8 @@ TrueCard:AddDropdown({
 TrueCard:AddSlider({
     Name = "Height Offset",
     Name = "Height Offset",    Flag = "TrueCard_HeightOffset",
-    Min = -15,
-    Max = 30,
+    Min = -90,
+    Max = 90,
     Increment = 1,
     Default = 0,
     Callback = function(v)
@@ -3486,8 +3551,6 @@ task.spawn(function()
     end
 end)
 
-local RaptorSpawn = Vector3.new(-600, 6, 2972)
-
 local function RaptorPose()
     if DinoCombatCache == nil then
         pcall(function()
@@ -3684,8 +3747,6 @@ task.spawn(function()
         end
     end
 end)
-
-local TrueWait = Vector3.new(-2570, 6, -2680)
 
 local function BlackScreenSet(on)
     pcall(function()
@@ -4318,7 +4379,6 @@ task.spawn(function()
                     pcall(function()
                         fireproximityprompt(pr)
                     end)
-                    State._raptorSummonAt = os.clock()
                     State.LastRaptor = "summoned, waiting fight"
                     if State._raptorSt then
                         pcall(function()
@@ -4354,6 +4414,212 @@ task.spawn(function()
                 State._raptorSummonBusy = false
             end)
         end
+    end
+end)
+
+-- ===== Auto Hop (Boss Raptor only): jump to a fresh server while the boss cools down =====
+local HopMinDwell = 25   -- stay this long in a server before hopping again
+local HopGap = 30        -- minimum seconds between two hops
+local HopMax = 8         -- consecutive hops before a forced break
+local HopBreak = 300     -- forced break length
+local HopMargin = 90     -- hop only while the boss is at least this far from ready
+
+local function HopHasKey()
+    local has = false
+    pcall(function()
+        local keyName = "BoneboundKey"
+        if Config.Rudeus and Config.Rudeus.Key then
+            keyName = Config.Rudeus.Key
+        end
+        local ch = LocalPlayer.Character
+        local pack = LocalPlayer:FindFirstChild("Backpack")
+        has = (ch and ch:FindFirstChild(keyName) ~= nil) or (pack and pack:FindFirstChild(keyName) ~= nil)
+    end)
+    return has
+end
+
+local function HopStatus(text)
+    if State._raptorHop then
+        pcall(function()
+            State._raptorHop:Set(text)
+        end)
+    end
+end
+
+local function HopCandidates()
+    local out = {}
+    pcall(function()
+        local url = "https://games.roblox.com/v1/games/" .. tostring(game.PlaceId) .. "/servers/Public?limit=100&excludeFullGames=true"
+        local body = game:HttpGet(url, true)
+        local data = game:GetService("HttpService"):JSONDecode(body)
+        local list = {}
+        for _, s in ipairs(data.data or {}) do
+            local id = s.id
+            local playing = tonumber(s.playing) or 999
+            if type(id) == "string" and id ~= game.JobId then
+                list[#list + 1] = { id = id, playing = playing }
+            end
+        end
+        table.sort(list, function(a, b)
+            return a.playing < b.playing
+        end)
+        for i = 1, math.min(#list, 5) do
+            out[#out + 1] = list[i].id
+        end
+    end)
+    return out
+end
+
+-- ══════════════════════════════════════════════════════════════════════
+--  AUTO EXE — รันสคริปต์ตัวเองใหม่หลัง Hop
+--  · ปุ่มเปิด/ปิดอยู่ที่การ์ด "Misc" → "Auto Exe"
+--  · ทำงานโดย "ฝากตัวโหลด" ไว้กับตัวรันก่อน hop ทุกครั้ง (queue_on_teleport)
+--  · ตัวโหลดจะเลือกแหล่งเอง: ไฟล์สำเนาในเครื่อง (ไว้ทดสอบ) → ถ้าไม่มี ค่อยดึงลิงก์
+--  · ลิงก์เผยแพร่ (แก้ที่นี่บรรทัดเดียว):
+-- ══════════════════════════════════════════════════════════════════════
+local AUTOEXE_URL = "https://raw.githubusercontent.com/ice123nm44nm-dot/VoltHub/main/PrehistoricFarm.lua"
+local AUTOEXE_LOCAL = "VoltScriptZ_PrehistoricFarm_src.luau"
+
+local function BuildAutoExePayload()
+    return table.concat({
+        "task.wait(3)",
+        "local function grab()",
+        "    local ok1, a = pcall(readfile, " .. string.format("%q", AUTOEXE_LOCAL) .. ")",
+        "    if ok1 and type(a) == \"string\" and #a > 200 then return a end",
+        "    return game:HttpGet(" .. string.format("%q", AUTOEXE_URL) .. ")",
+        "end",
+        "local ok, src = pcall(grab)",
+        "if ok and type(src) == \"string\" and #src > 200 then",
+        "    local fn = loadstring(src)",
+        "    if fn then pcall(fn) end",
+        "end",
+    }, "\n")
+end
+
+local function ArmAutoExe()
+    if State.AutoExe ~= true then
+        return
+    end
+    if type(queue_on_teleport) ~= "function" then
+        HopStatus("auto exe: unsupported")
+        return
+    end
+    pcall(queue_on_teleport, BuildAutoExePayload())
+    HopStatus("auto exe: armed")
+end
+
+local function DoHop()
+    if State._hopBusy then
+        return
+    end
+    State._hopBusy = true
+    State._hopCount = (State._hopCount or 0) + 1
+    State._hopNext = os.clock() + HopGap
+    State.LastRaptor = "hop: leaving"
+    HopStatus("hop: leaving")
+    pcall(PreTeleport)
+    pcall(ArmAutoExe)
+    local TS = game:GetService("TeleportService")
+    local failed = false
+    local conn = nil
+    pcall(function()
+        conn = TS.TeleportInitFailed:Connect(function(plr)
+            if plr == LocalPlayer then
+                failed = true
+            end
+        end)
+    end)
+    local cands = HopCandidates()
+    if #cands == 0 then
+        cands = { false }
+    end
+    for i = 1, math.min(#cands, 3) do
+        failed = false
+        local jobId = cands[i]
+        pcall(function()
+            if jobId then
+                TS:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
+            else
+                TS:Teleport(game.PlaceId, LocalPlayer)
+            end
+        end)
+        local t0 = os.clock()
+        while os.clock() - t0 < 5 do
+            if failed then
+                break
+            end
+            task.wait(0.25)
+        end
+        if not failed then
+            break
+        end
+    end
+    if failed then
+        HopStatus("hop: failed")
+        State._hopNext = os.clock() + 60
+    end
+    if conn then
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+    State._hopBusy = false
+end
+
+task.spawn(function()
+    local joinedAt = os.clock()
+    while Gen == getgenv().VoltGen do
+        task.wait(1)
+        pcall(function()
+            if not State.AutoHopRaptor or State._hopBusy then
+                return
+            end
+            local now = workspace:GetServerTimeNow()
+            local st = FTD:GetAttribute("RaptorState")
+            local ready = tonumber(FTD:GetAttribute("RaptorReadyAt")) or 0
+            local left = ready > 0 and math.floor(ready - now) or 0
+            if st == "Fight" then
+                return
+            end
+            if left <= HopMargin then
+                State._hopCount = 0
+                HopStatus(left > 0 and ("ready in " .. tostring(left) .. "s") or "ready")
+                return
+            end
+            if not State.AutoRaptorSummon then
+                HopStatus("need Auto Summon")
+                return
+            end
+            if not HopHasKey() then
+                HopStatus("no key")
+                return
+            end
+            if State._raptorSummonBusy then
+                return
+            end
+            if os.clock() - joinedAt < HopMinDwell then
+                return
+            end
+            if os.clock() < (State._hopNext or 0) then
+                HopStatus("hop cooldown " .. tostring(math.ceil((State._hopNext or 0) - os.clock())) .. "s")
+                return
+            end
+            if State._hopPauseUntil and os.clock() < State._hopPauseUntil then
+                HopStatus("hop paused " .. tostring(math.ceil(State._hopPauseUntil - os.clock())) .. "s")
+                return
+            end
+            if (State._hopCount or 0) >= HopMax then
+                State._hopPauseUntil = os.clock() + HopBreak
+                State._hopCount = 0
+                HopStatus("hop paused")
+                return
+            end
+            if AnyBossFighting() then
+                HopStatus("fighting")
+                return
+            end
+            DoHop()
+        end)
     end
 end)
 
@@ -4614,7 +4880,6 @@ PerfCard:AddToggle({
     Name = "Low Quality",    Flag = "PerfCard_LowQuality",
     Default = false,
     Callback = function(v)
-        State.LowQ = v
         LowQSet(v)
     end
 })
@@ -4667,6 +4932,24 @@ MiscCard:AddToggle({
     Default = true,
     Callback = function(v)
         State.AntiAFK = v
+    end
+})
+
+MiscCard:AddToggle({
+    Name = "Auto Exe",
+    Flag = "MiscCard_AutoExe",
+    Default = true,
+    Callback = function(v)
+        State.AutoExe = v
+    end
+})
+
+MiscCard:AddToggle({
+    Name = "Auto Skip Intro",
+    Flag = "MiscCard_AutoSkipIntro",
+    Default = true,
+    Callback = function(v)
+        State.AutoSkipIntro = v
     end
 })
 
@@ -4732,17 +5015,34 @@ ConfigCard:AddButton({
     end
 })
 
+local function PushFlagValue(obj)
+    local ok, v = pcall(function()
+        return obj:Get()
+    end)
+    if not ok then
+        return
+    end
+    if type(v) == "number" then
+        -- sliders in the library fire their callback only when the value really
+        -- changes, so nudge once (silently) and set the real value back
+        pcall(function()
+            obj:Set(v - 1, true)
+            if obj:Get() == v then
+                obj:Set(v + 1, true)
+            end
+            obj:Set(v, false)
+        end)
+    else
+        pcall(function()
+            obj:Set(v, false)
+        end)
+    end
+end
+
 local function SyncUIToState()
     pcall(function()
         for _, obj in pairs(Win.Flags) do
-            local ok, v = pcall(function()
-                return obj:Get()
-            end)
-            if ok then
-                pcall(function()
-                    obj:Set(v, false)
-                end)
-            end
+            PushFlagValue(obj)
         end
     end)
 end
@@ -4789,7 +5089,19 @@ ConfigCard:AddButton({
     end
 })
 
-Win:DisableAutoSave()
+-- Auto Save: remember every setting the user changes and restore it on the next launch
+pcall(function()
+    local cfgName = "Farm"
+    local okRead, f = pcall(readfile, "VoltScriptZ_autoload.txt")
+    if okRead and f and tostring(f) ~= "" then
+        cfgName = tostring(f)
+    end
+    Win:EnableAutoSave(cfgName, { AutoLoad = false })
+    if Win:LoadConfig(cfgName) then
+        SyncUIToState()
+    end
+end)
+
 pcall(function()
     local n = readfile("VoltScriptZ_autoload.txt")
     if n and tostring(n) ~= "" then
@@ -4814,7 +5126,6 @@ UICard:AddSlider({
     Default = 100,
     Suffix = "%",
     Callback = function(v)
-        State.UiScale = v
         pcall(function()
             local sc = Win.Main and Win.Main:FindFirstChildOfClass("UIScale")
             if sc then
@@ -4829,3 +5140,213 @@ Win:Notify({
     Text = "Loaded",
     Duration = 5
 })
+
+-- ══════════════════════════════════════════════════════════════════════
+--  AUTO SKIP INTRO — ข้ามหน้าโหลดของเกมให้เอง  (v2)
+--   · ช่วง "Loading the islands.. NN%" = เกมยังโหลดจริง → รอ (กดไม่ผ่าน)
+--   · หน้า 1 "Press any key to continue" → ส่งคีย์ให้เอง
+--   · หน้า 2 เมนู PLAY/SETTINGS/CODES/UPDATES → กดปุ่ม PLAY ให้เอง
+--   · ลองเรื่อย ๆ ไม่จำกัด · ล้มติดกันจะถอยเวลาห่างขึ้น (ไม่กดรัว)
+--   · ถ้าหน้าจอเปลี่ยน (โหลดเสร็จ / ขึ้นเมนู) จะเริ่มนับใหม่ทันที
+--   · ใช้ได้ทั้งตอนรันสคริปต์เอง และหลัง Hop (Auto Exe โหลดสคริปต์กลับมา)
+--   · ปุ่มเปิด/ปิด: การ์ด "Misc" → "Auto Skip Intro"
+-- ══════════════════════════════════════════════════════════════════════
+
+local INTRO_LOADING_TEXTS = { "Loading the islands", "Almost there", "Loading your farm" }
+local INTRO_BACKOFF = { 5, 10, 20, 30, 60 }
+
+local function IntroFindPlayButton(gui)
+    for _, d in ipairs(gui:GetDescendants()) do
+        if d:IsA("GuiButton") and d.Name == "Hit" then
+            local p, chain, depth = d.Parent, "", 0
+            while p and p ~= gui and depth < 6 do
+                chain = p.Name .. "<" .. chain
+                p = p.Parent
+                depth = depth + 1
+            end
+            if string.find(chain, "Play") then
+                return d
+            end
+        end
+    end
+    return nil
+end
+
+-- เกมกำลังโหลดของจริงอยู่หรือเปล่า (ช่วงนี้กดอะไรก็ไม่ผ่าน ต้องรอ)
+local function IntroIsLoading(gui)
+    for _, d in ipairs(gui:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") then
+            if d.Visible and d.TextTransparency < 0.9 then
+                local t = tostring(d.Text)
+                for _, k in ipairs(INTRO_LOADING_TEXTS) do
+                    if string.find(t, k, 1, true) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- ป้ายให้กดโชว์อยู่จริงไหม (Visible เฉย ๆ ไม่พอ — ตอนโหลดมันก็ Visible อยู่)
+local function IntroPromptLive(prompt)
+    return prompt ~= nil and prompt.Visible and prompt.TextTransparency < 0.9
+end
+
+local function IntroPressAnyKey()
+    local ok = pcall(function()
+        local VIM = game:GetService("VirtualInputManager")
+        VIM:SendKeyEvent(true, Enum.KeyCode.X, false, game)
+        task.wait(0.05)
+        VIM:SendKeyEvent(false, Enum.KeyCode.X, false, game)
+    end)
+    if ok then
+        return
+    end
+    if type(keypress) == "function" then
+        pcall(keypress, 88)
+        pcall(keyrelease, 88)
+    end
+end
+
+local function IntroClickButton(btn, mode)
+    local c = btn.AbsolutePosition + btn.AbsoluteSize / 2
+    if mode == "touch" then
+        pcall(touchtap, c.X, c.Y)
+    elseif mode == "signal" then
+        for _, sname in ipairs({ "MouseButton1Down", "MouseButton1Up", "Activated", "MouseButton1Click" }) do
+            local sig = btn[sname]
+            if sig then
+                pcall(firesignal, sig)
+            end
+        end
+    else
+        pcall(function()
+            mousemoveabs(c.X, c.Y)
+            task.wait(0.2)
+            mouse1click()
+        end)
+    end
+end
+
+-- คืนค่า: "ok" = ข้ามสำเร็จ · "done" = ไม่มีอะไรต้องทำ · "loading" = เกมยังโหลด · "fail" = ลองแล้วไม่ผ่าน
+local function IntroTrySkipOnce()
+    local pg = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then
+        return "done"
+    end
+    local gui = pg:FindFirstChild("FTD_Loading")
+    if not gui then
+        return "done"
+    end
+    local prompt = gui:FindFirstChild("Prompt", true)
+    local playBtn = IntroFindPlayButton(gui)
+    local loading = IntroIsLoading(gui)
+    local promptLive = IntroPromptLive(prompt)
+
+    -- เกมยังโหลดของจริง (ป้าย "Loading the islands..") → อย่าเพิ่งกด
+    if loading and not promptLive then
+        return "loading"
+    end
+
+    if not playBtn then
+        if not promptLive then
+            if loading then
+                return "loading"
+            end
+            return "done"
+        end
+        IntroPressAnyKey()
+        local t0 = os.clock()
+        while os.clock() - t0 < 6 do
+            local btn = IntroFindPlayButton(gui)
+            if btn then
+                playBtn = btn
+                break
+            end
+            if not gui.Parent then
+                return "done"
+            end
+            task.wait(0.4)
+        end
+    end
+
+    if not playBtn then
+        if IntroIsLoading(gui) then
+            return "loading"
+        end
+        if IntroPromptLive(prompt) then
+            return "fail"
+        end
+        return "done"
+    end
+
+    local methods = {}
+    if type(touchtap) == "function" then
+        methods[#methods + 1] = "touch"
+    end
+    methods[#methods + 1] = "mouse"
+    methods[#methods + 1] = "signal"
+    for _, mode in ipairs(methods) do
+        IntroClickButton(playBtn, mode)
+        task.wait(2.5)
+        if not IntroFindPlayButton(gui) then
+            return "ok"
+        end
+        if IntroIsLoading(gui) then
+            return "loading"
+        end
+    end
+    return "fail"
+end
+
+-- ลายเซ็นสถานะหน้าจอ: เปลี่ยน = ขึ้นหน้าใหม่/โหลดเสร็จ/มีเมนู → เริ่มนับความล้มเหลวใหม่
+local function IntroStateSig()
+    local pg = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
+    local gui = pg and pg:FindFirstChild("FTD_Loading")
+    if not gui then
+        return "none"
+    end
+    local prompt = gui:FindFirstChild("Prompt", true)
+    local menu = gui:FindFirstChild("Menu", true)
+    return tostring(gui)
+        .. (menu and "|M" or "|-")
+        .. (IntroPromptLive(prompt) and "|P" or "|-")
+        .. (IntroIsLoading(gui) and "|L" or "|-")
+end
+
+task.spawn(function()
+    local fails = 0
+    local lastSig = nil
+    while true do
+        task.wait(2)
+        if not State.AutoSkipIntro then
+            fails = 0
+            lastSig = nil
+        else
+            local sig = IntroStateSig()
+            if sig ~= lastSig then
+                lastSig = sig
+                fails = 0
+            end
+            local ok, res = pcall(IntroTrySkipOnce)
+            if not ok then
+                res = "fail"
+            end
+            if res == "ok" then
+                print("[Volt] intro skip: ข้ามหน้าโหลดสำเร็จ")
+                fails = 0
+            elseif res == "loading" or res == "done" then
+                fails = 0
+            else
+                fails = fails + 1
+                local gap = INTRO_BACKOFF[math.min(fails, #INTRO_BACKOFF)]
+                if fails == #INTRO_BACKOFF + 1 then
+                    print("[Volt] intro skip: ล้มติดกันหลายครั้ง — จะลองต่อทุก ~60 วิ")
+                end
+                task.wait(gap)
+            end
+        end
+    end
+end)
