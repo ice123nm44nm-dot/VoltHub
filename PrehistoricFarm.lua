@@ -780,7 +780,21 @@ task.spawn(function()
         end
         if State.AnyBossBusy and State.AnyBossBusy() then
             State._digBusy = false
-            continue
+            -- A fight (or a summon that is physically moving us) owns the character. A boss that is
+            -- merely armed (ready + key, nothing happening) must not park the digger forever, so give
+            -- the summon loop a window to act and then carry on digging.
+            local fighting = State.AnyBossFighting and State.AnyBossFighting()
+            if fighting or State._raptorSummonBusy or State._nessieSummonBusy then
+                State._digHoldAt = nil
+                continue
+            end
+            State._digHoldAt = State._digHoldAt or os.clock()
+            if os.clock() - State._digHoldAt < 45 then
+                continue
+            end
+            State._digHoldAt = nil
+        else
+            State._digHoldAt = nil
         end
         if DigState() == "Resolving" then
             -- the previous dig is still revealing; leave it alone
@@ -3697,7 +3711,7 @@ task.spawn(function()
                 hp = FTD:GetAttribute("RaptorHP")
                 max = FTD:GetAttribute("RaptorMaxHP")
             end)
-            if type(hp) == "number" and type(max) == "number" and max > 0 then
+            if rFighting and type(hp) == "number" and type(max) == "number" and max > 0 then
                 State.LastRaptor = "HP " .. tostring(math.floor(hp)) .. "/" .. tostring(max)
                 if State._raptorHp then
                     pcall(function()
@@ -4022,6 +4036,9 @@ State.AnyBossBusy = function()
     return ok and busy or false
 end
 
+-- exposed so the dig loop can tell "boss is actually fighting" apart from "boss is only armed"
+State.AnyBossFighting = AnyBossFighting
+
 -- single ride owner: first Ride-mode boss still fighting keeps the mount
 State.RideOwner = function()
     local fights = {}
@@ -4275,6 +4292,7 @@ task.spawn(function()
         if State.AutoRaptorSummon then
             pcall(function()
                 if RaptorPose() then
+                    State._raptorStreamDone = nil
                     return
                 end
                 local keyName = "BoneboundKey"
@@ -4287,6 +4305,7 @@ task.spawn(function()
                 local pack = LocalPlayer:FindFirstChild("Backpack")
                 local has = (ch and ch:FindFirstChild(keyName)) or (pack and pack:FindFirstChild(keyName))
                 if not has then
+                    State._raptorStreamDone = nil
                     State.LastRaptor = "summon: no key"
                     if State._raptorSt then
                         pcall(function()
@@ -4299,6 +4318,7 @@ task.spawn(function()
                 -- no equip: fire prompt without holding key
                 local ready = tonumber(FTD:GetAttribute("RaptorReadyAt")) or 0
                 if ready > 0 and ready - workspace:GetServerTimeNow() > 0 then
+                    State._raptorStreamDone = nil
                     State.LastRaptor = "summon: cooldown"
                     if State._raptorSt then
                         pcall(function()
@@ -4336,10 +4356,24 @@ task.spawn(function()
                         end
                     end)
                     pcall(function()
-                        LocalPlayer:RequestStreamAroundAsync(anchor, 5)
+                        local rc = FTD:GetAttribute("RaptorCenter")
+                        if type(rc) == "Vector3" then
+                            anchor = rc + Vector3.new(0, 4, 0)
+                        end
                     end)
+                    -- this request can block forever in some clients, so fire it from its own thread and
+                    -- never wait on the call itself. Fire it once per boss cycle only, otherwise every
+                    -- attempt leaves another stuck thread behind.
+                    if not State._raptorStreamDone then
+                        State._raptorStreamDone = true
+                        task.spawn(function()
+                            pcall(function()
+                                LocalPlayer:RequestStreamAroundAsync(anchor, 5)
+                            end)
+                        end)
+                    end
                     local tLoad = os.clock()
-                    while os.clock() - tLoad < 6 do
+                    while os.clock() - tLoad < 4 do
                         if not State.AutoRaptorSummon then
                             return
                         end
@@ -4348,6 +4382,34 @@ task.spawn(function()
                             break
                         end
                         task.wait(0.25)
+                    end
+                    if not consolePos then
+                        -- streaming did not hand us the console, so stand in the zone until it loads
+                        State.LastRaptor = "summon: moving to console"
+                        if State._raptorSt then
+                            pcall(function()
+                                State._raptorSt:Set(State.LastRaptor)
+                            end)
+                        end
+                        local tWalk = os.clock()
+                        while os.clock() - tWalk < 8 do
+                            if not State.AutoRaptorSummon then
+                                return
+                            end
+                            consolePos = ConsolePos()
+                            if consolePos then
+                                break
+                            end
+                            pcall(function()
+                                local hrpw = GetHRP()
+                                if hrpw then
+                                    hrpw.AssemblyLinearVelocity = Vector3.zero
+                                    hrpw.AssemblyAngularVelocity = Vector3.zero
+                                    hrpw.CFrame = CFrame.new(anchor + Vector3.new(0, 4, 0))
+                                end
+                            end)
+                            task.wait(0.5)
+                        end
                     end
                 end
                 if not consolePos then
@@ -5335,7 +5397,6 @@ task.spawn(function()
                 res = "fail"
             end
             if res == "ok" then
-                print("[Volt] intro skip: ข้ามหน้าโหลดสำเร็จ")
                 fails = 0
             elseif res == "loading" or res == "done" then
                 fails = 0
@@ -5343,7 +5404,6 @@ task.spawn(function()
                 fails = fails + 1
                 local gap = INTRO_BACKOFF[math.min(fails, #INTRO_BACKOFF)]
                 if fails == #INTRO_BACKOFF + 1 then
-                    print("[Volt] intro skip: ล้มติดกันหลายครั้ง — จะลองต่อทุก ~60 วิ")
                 end
                 task.wait(gap)
             end
