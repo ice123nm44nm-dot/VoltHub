@@ -17,6 +17,12 @@
 	  the client uses to show its E prompt. Verified live: it works from 47.9 studs away, the server
 	  ignores a customer that is not Ordering, and firing repeatedly advances the customer once.
 
+	Collect dishes (same remote, from ...Modules.Tasks.CollectDishes):
+	      ReplicatedStorage.Events.Restaurant.TaskCompleted:FireServer({
+	          Name = "CollectDishes", FurnitureModel = <the table>, Tycoon = <tycoon> })
+	  FurnitureModel is the table itself, not its Trash child; a table is collectable when
+	  <table>.Trash has the attribute Collectable == true.
+
 	UI: uwuware (loadstring'd). Note the copy that actually loads is the older single-window
 	build, so panels are created with library:CreateWindow + window:AddToggle/AddSlider/... .
 	A second CreateWindow does not auto-resize in that build, so everything lives in one window.
@@ -48,6 +54,8 @@ genv.__autoCollectMoney = genv.__autoCollectMoney or {
 	lastValue = 0,
 	takeOrders = true,
 	orders = 0,
+	collectDishes = true,
+	dishes = 0,
 	base = nil,
 	gen = 0,
 }
@@ -62,6 +70,9 @@ S.minValue = math.clamp(math.floor((tonumber(S.minValue) or 0) / 5 + 0.5) * 5, 0
 -- fields added after the first release: default them for an older saved table
 S.takeOrders = S.takeOrders ~= false
 S.orders = tonumber(S.orders) or 0
+
+S.collectDishes = S.collectDishes ~= false
+S.dishes = tonumber(S.dishes) or 0
 
 -- Reload guard: a live-reload replaces the module but any thread the previous run
 -- spawned keeps running, so each run claims a generation and the loop dies when it
@@ -123,32 +134,6 @@ local function findCollectableBill(tycoon)
 	return bestTable, bestValue
 end
 
-local statusLabel, lastLabel, ordersLabel
-
--- Keeps the stat lines inside the 230px panel even when the numbers get big.
-local function money(n)
-	n = tonumber(n) or 0
-	if n >= 1e6 then
-		return ("%.2fM"):format(n / 1e6)
-	elseif n >= 1e4 then
-		return ("%.1fK"):format(n / 1e3)
-	end
-	return tostring(math.floor(n))
-end
-
-local function refreshStats()
-	local cash = LocalPlayer:FindFirstChild("Cash")
-	if statusLabel then
-		statusLabel.Text = ("Bills %d   Earned $%s"):format(S.bills, money(S.earned))
-	end
-	if lastLabel then
-		lastLabel.Text = ("Last $%s   Cash $%s"):format(money(S.lastValue), money(cash and cash.Value))
-	end
-	if ordersLabel then
-		ordersLabel.Text = ("Orders taken: %d"):format(S.orders)
-	end
-end
-
 local function collectOnce(manual)
 	local tycoon = getTycoon()
 	if not tycoon then
@@ -177,9 +162,48 @@ local function collectOnce(manual)
 	if S.notify then
 		NotificationAdded:Fire(("Money Collected +$%d"):format(value))
 	end
-	print(("[AutoCollect] $%d from %s  (session %d bills / $%d)"):format(value, table.Name, S.bills, S.earned))
-	refreshStats()
 	return true
+end
+
+--------------------------------------------------------------------------------
+-- collect dishes
+--------------------------------------------------------------------------------
+
+-- A table is collectable when its `Trash` child has the Collectable attribute, and the
+-- payload names the TABLE (not the Trash) - the same condition the game's own
+-- CollectDishes module checks before showing its E prompt.
+local DISH_REFIRE_DELAY = 0.5
+local lastDish = setmetatable({}, { __mode = "k" })
+
+local function collectDishesOnce()
+	local tycoon = getTycoon()
+	if not tycoon then
+		return
+	end
+
+	local items = tycoon:FindFirstChild("Items")
+	local surface = items and items:FindFirstChild("Surface")
+	if not surface then
+		return
+	end
+
+	local now = os.clock()
+	for _, furniture in ipairs(surface:GetChildren()) do
+		local trash = furniture:FindFirstChild("Trash")
+		if trash and trash:GetAttribute("Collectable") == true then
+			local last = lastDish[furniture]
+			if not last or (now - last) >= DISH_REFIRE_DELAY then
+				lastDish[furniture] = now
+				TaskCompleted:FireServer({
+					Name = "CollectDishes",
+					FurnitureModel = furniture,
+					Tycoon = tycoon,
+				})
+				S.dishes += 1
+				return
+			end
+		end
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -253,8 +277,6 @@ local function takeOrderFor(deps, tycoon, groupId, customerId)
 	})
 
 	S.orders += 1
-	print(("[AutoCollect] took order  group=%s customer=%s  (session %d)"):format(groupId, customerId, S.orders))
-	refreshStats()
 end
 
 local function sweepOrders()
@@ -307,7 +329,6 @@ main:AddToggle({
 	state = S.enabled,
 	callback = function(value)
 		S.enabled = value
-		refreshStats()
 	end,
 })
 
@@ -351,14 +372,10 @@ main:AddButton({
 	end,
 })
 
-statusLabel = main:AddLabel({ text = "Bills: 0   Earned: $0" })
-lastLabel = main:AddLabel({ text = "Last: $0   Cash: 0" })
-
 main:AddButton({
 	text = "Reset session stats",
 	callback = function()
 		S.bills, S.earned, S.lastValue = 0, 0, 0
-		refreshStats()
 	end,
 })
 
@@ -370,11 +387,19 @@ main:AddToggle({
 	state = S.takeOrders,
 	callback = function(value)
 		S.takeOrders = value
-		refreshStats()
 	end,
 })
 
-ordersLabel = main:AddLabel({ text = "Orders taken: 0" })
+main:AddLabel({ text = "Collect Dishes" })
+
+main:AddToggle({
+	text = "Auto collect dishes",
+	flag = "ACM_Dishes",
+	state = S.collectDishes,
+	callback = function(value)
+		S.collectDishes = value
+	end,
+})
 
 library:Init()
 S.base = library.base
@@ -387,10 +412,6 @@ onCleanup(function()
 	S.base = nil
 end)
 
-refreshStats()
-
-print("[AutoCollect] UI loaded — menu is in CoreGui")
-
 task.spawn(function()
 	while S.gen == myGen do
 		if S.enabled then
@@ -399,7 +420,9 @@ task.spawn(function()
 		if S.takeOrders then
 			sweepOrders()
 		end
+		if S.collectDishes then
+			collectDishesOnce()
+		end
 		task.wait(S.interval)
 	end
-	print("[AutoCollect] superseded by a newer reload, stopping")
 end)
