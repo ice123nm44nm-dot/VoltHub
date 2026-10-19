@@ -1,61 +1,3 @@
---[[
-	Auto Collect Money + Auto Take Orders  —  Restaurant Tycoon 2  (VoltUI)
-
-	Money flow (from the game's own client code):
-	  server drops a `Bill` model on a table (Tycoon.Items.Surface.<table>.Bill, attribute Value),
-	  the client's CollectBill module answers the E prompt with
-	      ReplicatedStorage.Events.Restaurant.TaskCompleted:FireServer({
-	          Name = "CollectBill", FurnitureModel = <table>, Tycoon = <tycoon> })
-	  and the server pays out and deletes the Bill. This script sends exactly that, for every
-	  table that has an uncollected bill — no walking, no prompt, no character movement.
-
-	Take orders (same remote, from ...Modules.Tasks.TakeOrder):
-	      ReplicatedStorage.Events.Restaurant.TaskCompleted:FireServer({
-	          Name = "TakeOrder", GroupId = <group folder name>, CustomerId = <customer model name>,
-	          Tycoon = <tycoon> })
-	  fired only while the customer's state is CustomerState.Ordering, which is the same condition
-	  the client uses to show its E prompt. Verified live: it works from 47.9 studs away, the server
-	  ignores a customer that is not Ordering, and firing repeatedly advances the customer once.
-
-	Collect dishes (same remote, from ...Modules.Tasks.CollectDishes):
-	      ReplicatedStorage.Events.Restaurant.TaskCompleted:FireServer({
-	          Name = "CollectDishes", FurnitureModel = <the table>, Tycoon = <tycoon> })
-	  FurnitureModel is the table itself, not its Trash child; a table is collectable when
-	  <table>.Trash has the attribute Collectable == true.
-
-	Greet customers (same remote, from ...Modules.Tasks.SendToTable, shown as "Greet Customers"):
-	      ReplicatedStorage.Events.Restaurant.TaskCompleted:FireServer({
-	          Name = "SendToTable", GroupId = <group folder name>,
-	          FurnitureModel = <the table>, Tycoon = <tycoon> })
-	  fired while the group's State is CustomerState.Entered, at a free table with enough chairs.
-	  Verified live: it works from 32.8 studs away and the server seats the group.
-
-	Serve dishes (two steps, from ...Modules.Tasks.ServeFood + ...Systems.Restaurant.GrabFood):
-	      ReplicatedStorage.Events.Restaurant.GrabFood:InvokeServer(<plate>)
-	      ReplicatedStorage.Events.Restaurant.TaskCompleted:FireServer({
-	          Name = "Serve", GroupId = <group>, CustomerId = <customer>,
-	          FoodModel = <that same plate>, Tycoon = <tycoon> })
-	  fired while the customer's State is CustomerState.WaitingForDish, with a plate from
-	  <tycoon>.Objects.Food whose Name equals CustomerData.Order (and whose KidFlag matches a
-	  Kid customer). Verified live: grab works from ~17 studs, the serve lands within 0.25s from
-	  ~1400 studs away, and serving without grabbing first is rejected by the server.
-
-	Cook dishes (server-driven step machine, from ...Systems.Cook):
-	      ReplicatedStorage.Events.Restaurant.Interactions.Interacted:FireServer(<tycoon>, <Cook spec>)
-	      ReplicatedStorage.Events.Cook.CookInputRequested:FireServer("Interact", <station>, <equipment>)
-	      ReplicatedStorage.Events.Cook.CookInputRequested:FireServer("CompleteTask", <station>, <equipment>)
-	  the server answers every step through Events.Cook.CookUpdated (DirectToEquipment ->
-	  UpdateInteraction -> ... -> Finish) and names the station it wants. Interact opens the step,
-	  CompleteTask ends it; the gesture minigame stays entirely client side, so the server never
-	  sees it. Verified live: one cook finishes in ~0.6-1.5s without touching the station and the
-	  dish lands in <tycoon>.Objects.Food under the food key from the Start replication.
-
-	UI: VoltUI (loadstring'd from the hub repo). Flow: Library:CreateWindow -> AddSection ->
-	AddTab -> Tab:AddCard -> Card:AddToggle/AddSlider/AddButton. Unlike uwuware this one is
-	touch-ready: its input filters accept Enum.UserInputType.Touch, so every control works on
-	phones and iPads, and the window scales itself down to fit the viewport.
-]]
-
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -694,11 +636,149 @@ local function onCookUpdated(deps, replication, ...)
 	end
 end
 
+-- The game's own client code pulls the character to the station and anchors it on every step:
+-- the server's UpdateInteraction(active=true) makes the client Kitchen equipment module call
+-- CookUtility:LockCharacterToModel, which disables the movement controls, tweens the
+-- HumanoidRootPart in front of the station and anchors it. The server never checks proximity -
+-- this script fires Interact/CompleteTask itself - so that pull is only a visual convenience.
+-- require() caches the module, so patching the shared CookUtility table once covers every
+-- equipment module. Applied while the Cook feature is on; restored when it is turned off.
+local function setCookNoLock(on)
+	local moduleScript = findPath(ReplicatedStorage, "Source.Utility.Cook.CookUtility")
+	if not moduleScript then
+		return
+	end
+	local ok, cookUtility = pcall(require, moduleScript)
+	if not ok or type(cookUtility) ~= "table" then
+		return
+	end
+
+	if on then
+		if not genv.cookLockOriginal then
+			local original = cookUtility.LockCharacterToModel
+			if type(original) ~= "function" then
+				return
+			end
+			genv.cookLockOriginal = original
+			cookUtility.LockCharacterToModel = function(self, who, model)
+				if who == LocalPlayer then
+					-- keep the local character exactly where the player left it
+					return
+				end
+				return original(self, who, model)
+			end
+		end
+		return
+	end
+
+	if genv.cookLockOriginal then
+		cookUtility.LockCharacterToModel = genv.cookLockOriginal
+		genv.cookLockOriginal = nil
+	end
+	-- release anything the last step already applied before the patch was restored
+	local character = LocalPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if root then
+		root.Anchored = false
+	end
+	local controlsModule = findPath(ReplicatedStorage, "Source.Utility.Input.ControlsUtility")
+	if controlsModule then
+		pcall(function()
+			require(controlsModule):Enable()
+		end)
+	end
+end
+
+-- The game treats the cooking HUD as a full screen takeover: Systems.InterfaceController.CookBarController
+-- listens to CookBar.Opened/Closed and answers them with GuiVisibility:HideAll / ShowAll, which blinks
+-- the whole HUD off (bottom bar, currency, objectives, prompts) for the length of every cook. So the
+-- CookBar interface is shadowed here: while the Cook feature is on, Open is never really called - no
+-- Opened signal, no HideAll, no "cooking mode" - and the frame is kept hidden for good measure. Open
+-- and Close come from StandardInterface's metatable, so the shadow lives on that single interface.
+-- Installed once per game process (versioned, so a live-reload migrates an older shadow).
+local function setCookHudHidden(on)
+	if genv.cookBarVersion ~= 2 then
+		local cookBar = genv.cookBarWrapped
+		if not cookBar then
+			local moduleScript = findPath(LocalPlayer, "PlayerScripts.Source.Interfaces.CookBar")
+			if not moduleScript then
+				return
+			end
+			local ok, module = pcall(require, moduleScript)
+			if not ok or type(module) ~= "table" or type(module.Open) ~= "function" then
+				return
+			end
+			cookBar = module
+		end
+		local originalOpen = cookBar.Open
+		cookBar.Open = function(self, ...)
+			if genv.cookHudHidden then
+				return
+			end
+			return originalOpen(self, ...)
+		end
+		genv.cookBarWrapped = cookBar
+		genv.cookBarVersion = 2
+	end
+
+	local cookBar = genv.cookBarWrapped
+	if on then
+		genv.cookHudHidden = true
+		local frame = cookBar.Frame
+		if frame then
+			frame.Visible = false
+		end
+		-- a real cook may have left the bar open with the game's HideAll still in effect
+		if type(cookBar.IsOpen) == "function" and cookBar:IsOpen() then
+			pcall(function()
+				cookBar:Close()
+			end)
+		end
+		return
+	end
+
+	genv.cookHudHidden = nil
+end
+
+-- Systems.InterfaceController.CookBarController stops Build mode on every cook (Cook.Started ->
+-- Placement:StopPlacement), which kicks the player out of placement - and wipes the undo history -
+-- once per dish. While this feature is on that call is swallowed, but only when it comes straight
+-- from CookBarController: leaving Build mode any other way (its own close button, a tycoon switch,
+-- losing permissions) still stops placement as usual. Installed once per game process.
+local function setCookBuildGuard(on)
+	if not genv.placementGuarded then
+		local moduleScript = findPath(LocalPlayer, "PlayerScripts.Source.Systems.Placement")
+		if not moduleScript then
+			return
+		end
+		local ok, placement = pcall(require, moduleScript)
+		if not ok or type(placement) ~= "table" or type(placement.StopPlacement) ~= "function" then
+			return
+		end
+		local originalStop = placement.StopPlacement
+		placement.StopPlacement = function(self, ...)
+			if genv.cookBuildGuard then
+				local source = debug.info(2, "s")
+				if typeof(source) == "string" and source:find("CookBarController", 1, true) then
+					return
+				end
+			end
+			return originalStop(self, ...)
+		end
+		genv.placementGuarded = placement
+	end
+
+	genv.cookBuildGuard = on and true or nil
+end
+
 local function connectCook()
 	local deps = getCookDeps()
 	if not deps then
 		return
 	end
+	setCookNoLock(true)
+	setCookHudHidden(true)
+	setCookBuildGuard(true)
 	-- a live-reload keeps the previous run's connection alive, so replace it explicitly
 	if S.cookConn then
 		pcall(function()
@@ -768,15 +848,16 @@ if type(library) ~= "table" or type(library.CreateWindow) ~= "function" then
 end
 
 local main = library:CreateWindow({
-	Title = "Auto",
-	TitleAccent = "Restaurant",
-	Subtitle = "Money . Orders . Dishes . Greet . Serve . Cook",
+	Title = "Volt",
+	TitleAccent = "ScriptZ",
+	Subtitle = "Restaurant Tycoon 3 | Made By VoltScript Hub",
 	ToggleKey = Enum.KeyCode.RightControl,
+	Logo = "rbxassetid://100712256015627",
 })
 
 -- left column: money + the two order-floor jobs
-main:AddSection("Automation")
-local tab = main:AddTab({ Name = "Restaurant" })
+main:AddSection("General")
+local tab = main:AddTab({ Name = "Main" })
 
 local money = tab:AddCard({
 	Title = "Money",
@@ -940,6 +1021,9 @@ cook:AddToggle({
 			if ok and cooking then
 				cancelCook()
 			end
+			setCookNoLock(false)
+			setCookHudHidden(false)
+			setCookBuildGuard(false)
 		end
 	end,
 })
@@ -976,4 +1060,28 @@ task.spawn(function()
 		end
 		task.wait(S.interval)
 	end
+end)
+
+--------------------------------------------------------------------------------
+-- anti-afk (background, deliberately no UI)
+--------------------------------------------------------------------------------
+
+-- Roblox drops a client after ~20 minutes without input. Idled fires first as the warning, so
+-- answering it with a virtual button press resets the idle timer. VirtualUser input is injected
+-- straight into the engine, which is why it works while the Roblox window is unfocused (native
+-- mousemoverel/keypress do not). The connection lives in S so a live-reload replaces it instead of
+-- stacking a second handler.
+if S.antiAfkConn then
+	pcall(function()
+		S.antiAfkConn:Disconnect()
+	end)
+	S.antiAfkConn = nil
+end
+
+S.antiAfkConn = LocalPlayer.Idled:Connect(function()
+	pcall(function()
+		local virtualUser = game:GetService("VirtualUser")
+		virtualUser:CaptureController()
+		virtualUser:ClickButton2(Vector2.new())
+	end)
 end)
