@@ -1,5 +1,5 @@
 --[[
-	Auto Collect Money + Auto Take Orders  —  Restaurant Tycoon 2  (uwuware UI)
+	Auto Collect Money + Auto Take Orders  —  Restaurant Tycoon 2  (VoltUI)
 
 	Money flow (from the game's own client code):
 	  server drops a `Bill` model on a table (Tycoon.Items.Surface.<table>.Bill, attribute Value),
@@ -50,9 +50,10 @@
 	  sees it. Verified live: one cook finishes in ~0.6-1.5s without touching the station and the
 	  dish lands in <tycoon>.Objects.Food under the food key from the Start replication.
 
-	UI: uwuware (loadstring'd). Note the copy that actually loads is the older single-window
-	build, so panels are created with library:CreateWindow + window:AddToggle/AddSlider/... .
-	A second CreateWindow does not auto-resize in that build, so everything lives in one window.
+	UI: VoltUI (loadstring'd from the hub repo). Flow: Library:CreateWindow -> AddSection ->
+	AddTab -> Tab:AddCard -> Card:AddToggle/AddSlider/AddButton. Unlike uwuware this one is
+	touch-ready: its input filters accept Enum.UserInputType.Touch, so every control works on
+	phones and iPads, and the window scales itself down to fit the viewport.
 ]]
 
 local Players = game:GetService("Players")
@@ -64,7 +65,7 @@ local RestaurantEvents = Events:WaitForChild("Restaurant")
 local TaskCompleted = RestaurantEvents:WaitForChild("TaskCompleted")
 local NotificationAdded = Events:WaitForChild("NotificationAdded")
 
-local UI_URL = "https://raw.githubusercontent.com/GhostDuckyy/UI-Libraries/3b0bcba89893baa65d36b12b33e70e93ebc8b122/uwuware/source.lua"
+local UI_URL = "https://raw.githubusercontent.com/ice123nm44nm-dot/VoltHub/refs/heads/main/VoltUi.lua"
 
 --------------------------------------------------------------------------------
 -- state (kept in getgenv so it survives a live-reload)
@@ -127,7 +128,8 @@ local function onCleanup(fn)
 	end
 end
 
--- wipe the ScreenGui left behind by a previous run before building a new one
+-- wipe what a previous run left behind before building the new window. S.base holds the VoltUI
+-- Window object (older runs stored the raw ScreenGui); both of them expose :Destroy().
 if S.base then
 	pcall(function()
 		S.base:Destroy()
@@ -754,117 +756,154 @@ local function cookOnce()
 end
 
 --------------------------------------------------------------------------------
--- uwuware UI
+-- VoltUI
 --------------------------------------------------------------------------------
 
 local library = loadstring(game:HttpGet(UI_URL))()
-if type(library) ~= "table" then
+if type(library) ~= "table" or type(library.CreateWindow) ~= "function" then
 	library = genv.library
 end
-if type(library) ~= "table" then
-	error("uwuware failed to load from " .. UI_URL)
+if type(library) ~= "table" or type(library.CreateWindow) ~= "function" then
+	error("VoltUI failed to load from " .. UI_URL)
 end
 
-local main = library:CreateWindow("Auto Collect Money")
+local main = library:CreateWindow({
+	Title = "Auto",
+	TitleAccent = "Restaurant",
+	Subtitle = "Money . Orders . Dishes . Greet . Serve . Cook",
+	ToggleKey = Enum.KeyCode.RightControl,
+})
 
-main:AddLabel({ text = "Auto-collects $ bills" })
+-- left column: money + the two order-floor jobs
+main:AddSection("Automation")
+local tab = main:AddTab({ Name = "Restaurant" })
 
-main:AddToggle({
-	text = "Enabled",
-	flag = "ACM_Enabled",
-	state = S.enabled,
-	callback = function(value)
+local money = tab:AddCard({
+	Title = "Money",
+	Subtitle = "Collect bills left on tables",
+	Column = 1,
+	Toggle = false,
+})
+
+money:AddToggle({
+	Name = "Enabled",
+	Flag = "ACM_Enabled",
+	Default = S.enabled,
+	Callback = function(value)
 		S.enabled = value
 	end,
 })
 
-main:AddToggle({
-	text = "Notify on collect",
-	flag = "ACM_Notify",
-	state = S.notify,
-	callback = function(value)
+money:AddToggle({
+	Name = "Notify on collect",
+	Flag = "ACM_Notify",
+	Default = S.notify,
+	Callback = function(value)
 		S.notify = value
 	end,
 })
 
-main:AddSlider({
-	text = "Interval (s)",
-	flag = "ACM_Interval",
-	min = 0.25,
-	max = 3,
-	float = 0.25,
-	value = S.interval,
-	callback = function(value)
+money:AddSlider({
+	Name = "Interval",
+	Flag = "ACM_Interval",
+	Min = 0.25,
+	Max = 3,
+	Increment = 0.25,
+	Default = S.interval,
+	Suffix = "s",
+	Callback = function(value)
 		S.interval = value
 	end,
 })
 
-main:AddSlider({
-	text = "Min bill value ($)",
-	flag = "ACM_MinValue",
-	min = 0,
-	max = 500,
-	float = 5,
-	value = S.minValue,
-	callback = function(value)
+money:AddSlider({
+	Name = "Min bill value",
+	Flag = "ACM_MinValue",
+	Min = 0,
+	Max = 500,
+	Increment = 5,
+	Default = S.minValue,
+	Suffix = "$",
+	Callback = function(value)
 		S.minValue = value
 	end,
 })
 
-main:AddButton({
-	text = "Collect one now",
-	callback = function()
+money:AddButton({
+	Name = "Collect one now",
+	Callback = function()
 		collectOnce(true)
 	end,
 })
 
-main:AddButton({
-	text = "Reset session stats",
-	callback = function()
+money:AddButton({
+	Name = "Reset session stats",
+	Callback = function()
 		S.bills, S.earned, S.lastValue = 0, 0, 0
 	end,
 })
 
-main:AddLabel({ text = "Take Orders" })
+local orders = tab:AddCard({
+	Title = "Take Orders",
+	Subtitle = "Answer customers waiting to order",
+	Column = 1,
+	Toggle = false,
+})
 
-main:AddToggle({
-	text = "Auto take orders",
-	flag = "ACM_TakeOrders",
-	state = S.takeOrders,
-	callback = function(value)
+orders:AddToggle({
+	Name = "Auto take orders",
+	Flag = "ACM_TakeOrders",
+	Default = S.takeOrders,
+	Callback = function(value)
 		S.takeOrders = value
 	end,
 })
 
-main:AddLabel({ text = "Collect Dishes" })
+local dishes = tab:AddCard({
+	Title = "Collect Dishes",
+	Subtitle = "Clear dirty plates from tables",
+	Column = 1,
+	Toggle = false,
+})
 
-main:AddToggle({
-	text = "Auto collect dishes",
-	flag = "ACM_Dishes",
-	state = S.collectDishes,
-	callback = function(value)
+dishes:AddToggle({
+	Name = "Auto collect dishes",
+	Flag = "ACM_Dishes",
+	Default = S.collectDishes,
+	Callback = function(value)
 		S.collectDishes = value
 	end,
 })
 
-main:AddLabel({ text = "Greet Customers" })
+-- right column: the three customer/kitchen jobs
+local greet = tab:AddCard({
+	Title = "Greet Customers",
+	Subtitle = "Seat customers on arrival",
+	Column = 2,
+	Toggle = false,
+})
 
-main:AddToggle({
-	text = "Auto greet customers",
-	flag = "ACM_Greet",
-	state = S.greet,
-	callback = function(value)
+greet:AddToggle({
+	Name = "Auto greet customers",
+	Flag = "ACM_Greet",
+	Default = S.greet,
+	Callback = function(value)
 		S.greet = value
 	end,
 })
 
-main:AddLabel({ text = "Serve Dishes" })
+local serve = tab:AddCard({
+	Title = "Serve Dishes",
+	Subtitle = "Grab a cooked plate and serve it",
+	Column = 2,
+	Toggle = false,
+})
 
-main:AddToggle({
-	text = "Auto serve dishes",
-	flag = "ACM_Serve",
-	state = S.serve,
-	callback = function(value)
+serve:AddToggle({
+	Name = "Auto serve dishes",
+	Flag = "ACM_Serve",
+	Default = S.serve,
+	Callback = function(value)
 		S.serve = value
 		if not value and pendingServe then
 			-- do not leave a grabbed plate reserved at the counter
@@ -877,13 +916,18 @@ main:AddToggle({
 	end,
 })
 
-main:AddLabel({ text = "Cook Dishes" })
+local cook = tab:AddCard({
+	Title = "Cook Dishes",
+	Subtitle = "Drive the server's cook steps",
+	Column = 2,
+	Toggle = false,
+})
 
-main:AddToggle({
-	text = "Auto cook dishes",
-	flag = "ACM_Cook",
-	state = S.cook,
-	callback = function(value)
+cook:AddToggle({
+	Name = "Auto cook dishes",
+	Flag = "ACM_Cook",
+	Default = S.cook,
+	Callback = function(value)
 		S.cook = value
 		if value then
 			connectCook()
@@ -900,15 +944,14 @@ main:AddToggle({
 	end,
 })
 
-library:Init()
-S.base = library.base
+S.base = main
 onCleanup(function()
-	if S.base and S.base.Parent then
+	if S.base then
 		pcall(function()
 			S.base:Destroy()
 		end)
+		S.base = nil
 	end
-	S.base = nil
 end)
 
 task.spawn(function()
