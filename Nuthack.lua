@@ -1,4 +1,5 @@
-Auto Collect Money + Auto Take Orders  —  Restaurant Tycoon 2  (uwuware UI)
+--[[
+	Auto Collect Money + Auto Take Orders  —  Restaurant Tycoon 2  (uwuware UI)
 
 	Money flow (from the game's own client code):
 	  server drops a `Bill` model on a table (Tycoon.Items.Surface.<table>.Bill, attribute Value),
