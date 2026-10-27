@@ -148,7 +148,7 @@ DodgeCard:AddSlider({
 DodgeCard:AddDropdown({
     Name = "Direction",
     Flag = "Dodge_Direction",
-    Options = { "Auto", "Always Left", "Always Right", "Backward" },
+    Options = { "Auto", "Always Left", "Always Right", "Backward", "In Place" },
     Default = "Auto",
     Callback = function(value)
         State.Direction = value
@@ -1659,6 +1659,61 @@ local DASH_MOVE_VECTORS = {
     Backward = Vector3.new(0, 0, 1)
 }
 
+-- "In Place": the game always slides the character somewhere during a dash, so
+-- a zero MoveVector still ends up moving (tapped with no input it goes forward).
+-- The only reliable way to stay put is to pin the root for the length of the
+-- dash - the dash state, i-frames and animation all keep running.
+local InPlace = {
+    root = nil,
+    conn = nil,
+    anchored = false
+}
+
+local function stopInPlace()
+    if InPlace.conn then
+        pcall(function()
+            InPlace.conn:Disconnect()
+        end)
+        InPlace.conn = nil
+    end
+    if InPlace.root and InPlace.anchored and InPlace.root.Parent then
+        pcall(function()
+            InPlace.root.Anchored = false
+        end)
+    end
+    InPlace.root = nil
+    InPlace.anchored = false
+end
+
+local function startInPlace(character)
+    local root = character and (character.PrimaryPart or character:FindFirstChild("HumanoidRootPart"))
+    if not root then
+        return
+    end
+    stopInPlace()
+    InPlace.root = root
+    if not root.Anchored then
+        root.Anchored = true
+        InPlace.anchored = true
+    end
+
+    local started = os.clock()
+    InPlace.conn = game:GetService("RunService").Heartbeat:Connect(function()
+        local now = os.clock()
+        local occupied = getOccupied()
+        local dashing = occupied and occupied.Dashing and occupied.Dashing.Value
+        -- release once the dash is over, but never hold longer than 0.7s
+        if not root.Parent or (now - started > 0.12 and not dashing) or (now - started > 0.7) then
+            stopInPlace()
+            pcall(function()
+                root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            end)
+        end
+    end)
+end
+
+getgenv().VoltInPlace = { start = startInPlace, stop = stopInPlace }
+
 local function fire(token, force)
     if token ~= Engine.token then
         return
@@ -1711,15 +1766,57 @@ local function fire(token, force)
     Engine.lastFireAt = now
     Engine.stats.fired = Engine.stats.fired + 1
 
+    -- "In Place" uses the game's own Standing dash: the same call a player makes
+    -- by tapping Space with no movement input (no Direction, no MoveVector). The
+    -- game then labels it Standing and plays that animation, and the root is
+    -- pinned for the duration so the residual slide (~3 studs) does not happen.
+    if State.Direction == "In Place" then
+        Engine.lastDash = { direction = "Standing", move = Vector3.new(0, 0, 0), at = now }
+        pcall(function()
+            controller:TryDash({ MoveVector = Vector3.new(0, 0, 0) })
+        end)
+        startInPlace(character)
+        return
+    end
+
     -- Direction only relabels the dash; the movement itself comes from MoveVector
     -- (control space: -X = left, +X = right, +Z = backward). Without this the
     -- character keeps its input vector and drifts forward instead of strafing.
     local move = DASH_MOVE_VECTORS[direction] or Vector3.new(0, 0, 0)
 
+    Engine.lastDash = { direction = direction, move = move, at = now }
+
     pcall(function()
         controller:TryDash({ Direction = direction, MoveVector = move })
     end)
 end
+
+-- When "In Place" is selected the player's own Space dash has to behave the
+-- same way, so the game's dash is left alone and only the root is pinned.
+task.spawn(function()
+    local dashKey = Enum.KeyCode.Space
+    pcall(function()
+        local keybinds = ReplicatedStorage:WaitForChild("Keybinds", 5)
+        local key = keybinds and keybinds.GetKeybind and keybinds:GetKeybind("Dash")
+        if typeof(key) == "EnumItem" then
+            dashKey = key
+        end
+    end)
+
+    Engine.conns[#Engine.conns + 1] = game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
+        if processed or State.Direction ~= "In Place" then
+            return
+        end
+        if input.KeyCode ~= dashKey then
+            return
+        end
+        local character = LocalPlayer.Character
+        local occupied = getOccupied()
+        if character and getCharacterData() and occupied and occupied.Equipped.Value then
+            startInPlace(character)
+        end
+    end)
+end)
 
 local function onPerfect(character)
     local value = character:GetAttribute("Perfect")
