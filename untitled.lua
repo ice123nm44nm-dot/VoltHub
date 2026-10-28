@@ -1396,6 +1396,10 @@ local Engine = {
     opponentConns = {},
     token = 0,
     character = nil,
+    controllerCache = nil,
+    controllerChar = nil,
+    controllerMissChar = nil,
+    controllerMissAt = 0,
     opponent = nil,
     lastDirection = nil,
     lastDirectionAt = 0,
@@ -1404,6 +1408,8 @@ local Engine = {
     blockBridge = nil,
     tryBlockFn = nil,
     tryUnblockFn = nil,
+    blockLookupAt = 0,
+    unblockLookupAt = 0,
     blocking = false,
     blockConfirmed = false,
     blockUntil = 0,
@@ -1416,11 +1422,21 @@ local Engine = {
 }
 getgenv().VoltDodge = Engine
 
-local function getController()
-    local character = LocalPlayer.Character
-    if not character then
-        return nil
-    end
+-- The dash controller is a table living in the game's heap, so filtergc is the
+-- only way to reach it. That scan is the single most expensive thing this script
+-- does (milliseconds on a desktop, far more on a phone) and the table stays the
+-- same for as long as the character is alive, so the result is cached per
+-- character. Before this, every punch paid for a fresh heap scan on the main
+-- thread, which is what made the game stall on mobile once Auto Dodge was on.
+local CONTROLLER_MISS_RETRY = 1.5
+
+local function invalidateController()
+    Engine.controllerCache = nil
+    Engine.controllerChar = nil
+    Engine.controllerMissChar = nil
+end
+
+local function scanController(character)
     local ok, list = pcall(filtergc, "table", { Keys = { "TapDashCooldown", "CurrentDashId", "CharacterData" } }, false)
     if not ok or type(list) ~= "table" then
         return nil
@@ -1436,6 +1452,39 @@ local function getController()
             return candidate
         end
     end
+    return nil
+end
+
+local function getController()
+    local character = LocalPlayer.Character
+    if not character then
+        invalidateController()
+        return nil
+    end
+
+    local cached = Engine.controllerCache
+    if cached and Engine.controllerChar == character and cached.Character == character then
+        return cached
+    end
+
+    -- a character with no controller yet (still spawning, weapon not equipped)
+    -- is remembered briefly too, so a burst of punches cannot scan once per punch
+    local now = os.clock()
+    if Engine.controllerMissChar == character and (now - Engine.controllerMissAt) < CONTROLLER_MISS_RETRY then
+        return nil
+    end
+
+    local found = scanController(character)
+    if found then
+        Engine.controllerCache = found
+        Engine.controllerChar = character
+        Engine.controllerMissChar = nil
+        return found
+    end
+
+    invalidateController()
+    Engine.controllerMissChar = character
+    Engine.controllerMissAt = now
     return nil
 end
 
@@ -1468,14 +1517,22 @@ local function getOpponent()
     return lockedOn and lockedOn.Value or nil
 end
 
+-- A missing guard function used to be looked up again on every feint flag,
+-- which is the most frequent event in a fight. Remember the miss and retry it
+-- slowly instead of scanning the heap each time.
+local BLOCK_LOOKUP_RETRY = 2
+
 local function getBlockFunctions()
-    if not Engine.tryBlockFn then
+    local now = os.clock()
+    if not Engine.tryBlockFn and now >= Engine.blockLookupAt then
+        Engine.blockLookupAt = now + BLOCK_LOOKUP_RETRY
         local ok, list = pcall(filtergc, "function", { Name = "TryBlock" }, false)
         if ok and type(list) == "table" then
             Engine.tryBlockFn = list[1]
         end
     end
-    if not Engine.tryUnblockFn then
+    if not Engine.tryUnblockFn and now >= Engine.unblockLookupAt then
+        Engine.unblockLookupAt = now + BLOCK_LOOKUP_RETRY
         local ok, list = pcall(filtergc, "function", { Name = "TryUnblock" }, false)
         if ok and type(list) == "table" then
             Engine.tryUnblockFn = list[1]
@@ -1557,7 +1614,10 @@ local function startBlock()
                     if not (o and o.Dashing and o.Dashing.Value) then
                         break
                     end
-                    task.wait(0.02)
+                    -- 50ms is plenty: the dash itself lasts 0.3s and the cached
+                    -- controller makes each step cheap, so this no longer hammers
+                    -- the heap 25 times per dash on a phone
+                    task.wait(0.05)
                 end
                 Engine.blockPending = false
                 if Engine.active and State.BlockFeint then
@@ -1738,8 +1798,10 @@ local function fire(token, force)
         Engine.stats.skipped = Engine.stats.skipped + 1
     end
 
-    local controller = getController()
-    if not controller then
+    -- Rate limit first: it is the cheapest test, so a punch burst is dropped
+    -- before anything has to touch the heap.
+    local now = os.clock()
+    if not force and (now - Engine.lastFireAt) < 0.08 then
         skip()
         return
     end
@@ -1750,14 +1812,14 @@ local function fire(token, force)
         return
     end
 
-    local occupied = controller.Occupied
-    if not force and occupied and occupied.Dashing and occupied.Dashing.Value then
+    local controller = getController()
+    if not controller then
         skip()
         return
     end
 
-    local now = os.clock()
-    if not force and (now - Engine.lastFireAt) < 0.08 then
+    local occupied = controller.Occupied
+    if not force and occupied and occupied.Dashing and occupied.Dashing.Value then
         skip()
         return
     end
@@ -1772,9 +1834,12 @@ local function fire(token, force)
     -- pinned for the duration so the residual slide (~3 studs) does not happen.
     if State.Direction == "In Place" then
         Engine.lastDash = { direction = "Standing", move = Vector3.new(0, 0, 0), at = now }
-        pcall(function()
+        local ok = pcall(function()
             controller:TryDash({ MoveVector = Vector3.new(0, 0, 0) })
         end)
+        if not ok then
+            invalidateController()
+        end
         startInPlace(character)
         return
     end
@@ -1786,9 +1851,14 @@ local function fire(token, force)
 
     Engine.lastDash = { direction = direction, move = move, at = now }
 
-    pcall(function()
+    local ok = pcall(function()
         controller:TryDash({ Direction = direction, MoveVector = move })
     end)
+    if not ok then
+        -- the handle went stale (the game rebuilt the controller): drop it so the
+        -- next punch scans again instead of failing silently for the whole match
+        invalidateController()
+    end
 end
 
 -- When "In Place" is selected the player's own Space dash has to behave the
@@ -1915,6 +1985,9 @@ local function bindCharacter(character)
     Engine.blockUntil = 0
     Engine.tryBlockFn = nil
     Engine.tryUnblockFn = nil
+    Engine.blockLookupAt = 0
+    Engine.unblockLookupAt = 0
+    invalidateController()
     Engine.feintArmUntil = 0
     Engine.feintLandTime = nil
     Engine.feintTargetValue = nil
