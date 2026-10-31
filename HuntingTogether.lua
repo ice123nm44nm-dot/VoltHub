@@ -510,7 +510,8 @@ LeaveToggle:Set(true)
 BossCard:AddDropdown({
     Name = "Boss Room",
     Options = {"Gorilla King","Whitefang Sabertooth","Obsidian Pharaoh","Tempest Dragon King","Volcano Turtle King"},
-    Default = "Gorilla King",
+    Default = {"Gorilla King"},
+    Multi = true,
     Flag = "BossRoom",
     Callback = function(Value)
         local BossMap = {
@@ -520,7 +521,18 @@ BossCard:AddDropdown({
             ["Tempest Dragon King"] = "Boss04",
             ["Volcano Turtle King"] = "Boss05"
         }
-        Genv.VS_BossRoom = BossMap[Value] or "Boss01"
+        local Selected = {}
+        for _, Name in ipairs(type(Value) == "table" and Value or {Value}) do
+            local Key = BossMap[Name]
+            if Key then
+                table.insert(Selected, Key)
+            end
+        end
+        if #Selected == 0 then
+            Selected = {"Boss01"}
+        end
+        Genv.VS_BossRooms = Selected
+        Genv.VS_BossRoom = Selected[1]
     end
 })
 local BossRoomToggle = BossCard:AddToggle({
@@ -532,6 +544,7 @@ local BossRoomToggle = BossCard:AddToggle({
             Genv.VS_BossFarm = Genv.VS_BossFarm or {}
             Genv.VS_BossFarm.Running = true
             Genv.VS_BossRoom = Genv.VS_BossRoom or "Boss01"
+            Genv.VS_BossRooms = Genv.VS_BossRooms or {Genv.VS_BossRoom}
             if not Genv.VS_BossFarm.Thread then
                 Genv.VS_BossFarm.Thread = task.spawn(function()
                     local Players = game:GetService("Players")
@@ -590,7 +603,27 @@ local BossRoomToggle = BossCard:AddToggle({
                               continue
                           end
                           local AssistMode = FarmAssist()
-                          local BossRoom = Genv.VS_BossRoom or "Boss01"
+                          local SelectedRooms = Genv.VS_BossRooms
+                          if type(SelectedRooms) ~= "table" or #SelectedRooms == 0 then
+                              SelectedRooms = { Genv.VS_BossRoom or "Boss01" }
+                          end
+                          -- Prefer the nearest alive boss among the selected rooms.
+                          local BossRoom = nil
+                          local BestDist = math.huge
+                          local RootNow = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                          for _, Room in ipairs(SelectedRooms) do
+                              if BossIsAlive(Room) then
+                                  local Pos = BossPositions[Room]
+                                  local Dist = (RootNow and Pos) and (Pos - RootNow.Position).Magnitude or math.huge
+                                  if Dist < BestDist then
+                                      BestDist = Dist
+                                      BossRoom = Room
+                                  end
+                              end
+                          end
+                          if not BossRoom then
+                              BossRoom = SelectedRooms[1]
+                          end
                           local Position = BossPositions[BossRoom] or Vector3.new(0, 50, 0)
                           if AssistMode and BossIsAlive(BossRoom) and not Genv.VS_BossPriority then
                               local Root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
