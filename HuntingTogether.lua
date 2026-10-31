@@ -14,6 +14,7 @@ local ShopTab = Window:AddTab({ Name = "Shop" })
 Window:AddSection("Utilities")
 local UtilitiesTab = Window:AddTab({ Name = "Utilities" })
 local SettingsTab = Window:AddTab({ Name = "Settings" })
+
 local FarmCard = MainTab:AddCard({
     Title = "Farm",
     Subtitle = "Auto Farm by Teleport",
@@ -602,47 +603,22 @@ local BossRoomToggle = BossCard:AddToggle({
                                   if Bindable then Bindable:Fire("autoToggle") end
                               end
                               CurrentRoom = nil
-                          elseif AssistMode and Genv.VS_BossPriority and not BossIsAlive(BossRoom) then
-                              local ReturnPosition = Genv.VS_BossReturnPosition
-                              Genv.VS_BossPriority = false
-                              Genv.VS_BossReturnPosition = nil
-                              CurrentRoom = nil
-                     if ReturnPosition then
-                                   local Root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                                   if Root then
-                                       local ReachedReturn
-                                       if (Genv.VS_FarmMoveMode or "teleport") == "walk" then
-                                           ReachedReturn = VSWalkTo(ReturnPosition, {
-                                               AcceptDistance = 45,
-                                               Timeout = 120,
-                                               IsActive = function()
-                                                   return Genv.VS_BossFarm and Genv.VS_BossFarm.Running
-                                               end,
-                                           })
-                                       else
-                                           Root.CFrame = CFrame.new(ReturnPosition)
-                                           local ReturnStart = os.clock()
-                                           ReachedReturn = false
-                                           while os.clock() - ReturnStart < 8 do
-                                               local NewRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                                               if NewRoot and (NewRoot.Position - ReturnPosition).Magnitude <= 80 then
-                                                   ReachedReturn = true
-                                                   break
-                                               end
-                                               task.wait(0.2)
-                                           end
-                                       end
-                                       if ReachedReturn then
-                                           pcall(function() Remotes.BotState:FireServer(true) end)
-                                          if LocalPlayer:GetAttribute("AutoOn") ~= true then
-                                              local Bindable = LocalPlayer:FindFirstChild("LumiMenuToggle")
-                                              if Bindable then Bindable:Fire("autoToggle") end
-                                          end
-                                      end
-                                  end
-                              end
-                              task.wait(1)
-                          end
+                           elseif AssistMode and Genv.VS_BossPriority and not BossIsAlive(BossRoom) then
+                               Genv.VS_BossPriority = false
+                               local ReturnPosition = Genv.VS_BossReturnPosition
+                               Genv.VS_BossReturnPosition = nil
+                               CurrentRoom = nil
+                               -- Do not walk back here: let Auto Farm / Field Farm
+                               -- handle the return journey themselves.
+                               if Genv.VS_AutoFarm and Genv.VS_AutoFarm.Running then
+                                   Genv.VS_AutoFarm.BossReturnPending = true
+                               end
+                               if Genv.VS_FieldFarm and Genv.VS_FieldFarm.Running then
+                                   Genv.VS_FieldFarm.BossReturnPending = true
+                               end
+                               Genv.VS_BossReturnRequested = true
+                               task.wait(1)
+                           end
                           if AssistMode and not Genv.VS_BossPriority then
                               task.wait(1)
                               continue
@@ -1074,10 +1050,29 @@ VSWalkTo = function(Position, Options)
             local attr = Player:GetAttribute("WarpPillars") or ""
             return attr:find(name, 1, true) ~= nil
         end
+        -- A pillar is only usable if no locked BossLock barrier sits between
+        -- the current point and that pillar (or between the pillar and the goal).
+        -- Otherwise the walk to/from the pillar would hit a locked gate.
+        local function lockedBarrierBetween(Za, Zb)
+            local MinZ = math.min(Za, Zb)
+            local MaxZ = math.max(Za, Zb)
+            for _, Part in ipairs(CollectionService:GetTagged("BossLock")) do
+                if Part:IsA("BasePart") and Part.CanCollide then
+                    local PZ = Part.Position.Z
+                    if PZ >= MinZ and PZ <= MaxZ then
+                        local HalfX = Part.Size.X / 2
+                        if Part.Position.X - HalfX <= 5 and Part.Position.X + HalfX >= -5 then
+                            return true
+                        end
+                    end
+                end
+            end
+            return false
+        end
         local function nearestPillar(pos)
             local best, bestDist = nil, math.huge
             for name, ppos in pairs(PillarPositions) do
-                if isUnlocked(name) then
+                if isUnlocked(name) and not lockedBarrierBetween(pos.Z, ppos.Z) then
                     local d = (ppos - pos).Magnitude
                     if d < bestDist then bestDist = d; best = name end
                 end
@@ -1087,7 +1082,7 @@ VSWalkTo = function(Position, Options)
         local function closestPillarToGoal(goal)
             local best, bestDist = nil, math.huge
             for name, ppos in pairs(PillarPositions) do
-                if isUnlocked(name) then
+                if isUnlocked(name) and not lockedBarrierBetween(ppos.Z, goal.Z) then
                     local d = math.abs(ppos.Z - goal.Z)
                     if d < bestDist then bestDist = d; best = name end
                 end
@@ -1108,7 +1103,7 @@ VSWalkTo = function(Position, Options)
             if inDirection and pillarDist < directDist * 0.7 then
                 -- Reach a pillar in three natural phases: center first, travel
                 -- along the lane to the pillar's Z, then step out to the pillar.
-                -- A pillar sits at X≈19/22, so targeting it directly would bypass
+                -- A pillar sits at Xâ‰ˆ19/22, so targeting it directly would bypass
                 -- the normal center-first rule and cut diagonally across the lane.
                 local PillarPosition = PillarPositions[nearPillar]
                 local CenterApproach = Vector3.new(0, StartPosition.Y, PillarPosition.Z)
@@ -1804,6 +1799,10 @@ FarmCard:AddToggle({
                             task.wait(1)
                             continue
                         end
+                        if Genv.VS_AutoFarm.BossReturnPending then
+                            CurrentField = nil
+                            Genv.VS_AutoFarm.BossReturnPending = false
+                        end
                         if Genv.VS_BossPriority then
                             task.wait(1)
                             continue
@@ -2048,6 +2047,10 @@ FarmCard:AddToggle({
                          EnsureAutoOn()
                      end
                      while Genv.VS_FieldFarm.Running do
+                         if Genv.VS_FieldFarm.BossReturnPending then
+                             CurrentField = nil
+                             Genv.VS_FieldFarm.BossReturnPending = false
+                         end
                          if Genv.VS_BossPriority or Genv.VS_ChestBusy then
                              task.wait(1)
                              continue
