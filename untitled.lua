@@ -1418,6 +1418,7 @@ local Engine = {
     feintTargetValue = nil,
     pendingValue = nil,
     blockPending = false,
+    lastProjectileUntil = 0,
     stats = { seen = 0, fired = 0, skipped = 0, blocks = 0, feintDodges = 0, feintBlocks = 0, feintSkips = 0 }
 }
 getgenv().VoltDodge = Engine
@@ -1894,6 +1895,17 @@ local function onPerfect(character)
         return
     end
 
+    -- ignore punches that cannot reach us (air punches)
+    local opponent = Engine.opponent or getOpponent()
+    local myRoot = character:FindFirstChild("HumanoidRootPart")
+    local theirRoot = opponent and (opponent.PrimaryPart or opponent:FindFirstChild("HumanoidRootPart"))
+    if myRoot and theirRoot then
+        local dist = (myRoot.Position - theirRoot.Position).Magnitude
+        if dist > 6 then
+            return
+        end
+    end
+
     Engine.stats.seen = Engine.stats.seen + 1
 
     local opponent = Engine.opponent or getOpponent()
@@ -1993,9 +2005,60 @@ local function bindCharacter(character)
     Engine.feintTargetValue = nil
     Engine.pendingValue = nil
     Engine.blockPending = false
+    Engine.lastProjectileUntil = 0
 
     Engine.conns[#Engine.conns + 1] = character:GetAttributeChangedSignal("Perfect"):Connect(function()
         onPerfect(character)
+    end)
+
+    Engine.conns[#Engine.conns + 1] = character:GetAttributeChangedSignal("ClientProjectileFreeDashUntil"):Connect(function()
+        local untilTime = character:GetAttribute("ClientProjectileFreeDashUntil")
+        if type(untilTime) ~= "number" then
+            return
+        end
+        if untilTime <= (Engine.lastProjectileUntil or 0) then
+            print("[PROJ-SKIP] until=", untilTime, "last=", Engine.lastProjectileUntil)
+            return
+        end
+        Engine.lastProjectileUntil = untilTime
+        if not State.AutoDodge then
+            print("[PROJ-SKIP] AutoDodge off")
+            return
+        end
+        local myRoot = character:FindFirstChild("HumanoidRootPart")
+        local opponent = Engine.opponent or getOpponent()
+        local theirRoot = opponent and (opponent.PrimaryPart or opponent:FindFirstChild("HumanoidRootPart"))
+        local dist = 0
+        if myRoot and theirRoot then
+            dist = (myRoot.Position - theirRoot.Position).Magnitude
+        end
+        local release = 0.4167
+        local speed = 32
+        local offset = 2.5
+        local travel = math.max(0, (dist - offset) / speed)
+        local arrival = release + travel
+        local delay = arrival - 0.3
+        if delay < 0.3 then
+            delay = 0.3
+        end
+        if delay > 0.8 then
+            delay = 0.8
+        end
+        print("[PROJ-TRIGGER] dist=", dist, "delay=", delay, "until=", untilTime)
+        task.delay(delay, function()
+            if not (character and character.Parent) then
+                print("[PROJ-CANCEL] no char")
+                return
+            end
+            if character:GetAttribute("ClientProjectileFreeDashUntil") ~= untilTime then
+                print("[PROJ-CANCEL] until changed")
+                return
+            end
+            Engine.token = Engine.token + 1
+            local token = Engine.token
+            print("[PROJ-DASH] firing token=", token)
+            fire(token, true)
+        end)
     end)
 
     Engine.conns[#Engine.conns + 1] = character:GetAttributeChangedSignal("NeededDirection"):Connect(function()
