@@ -3890,7 +3890,7 @@ end
 local Win = Library:CreateWindow({
     Name = "VoltScriptZ",
     Title = "Volt",
-    TitleAccent = "Frosty",
+    TitleAccent = "ScriptZ",
     Subtitle = "Map MAHANAKHON RACING | Made By VoltScript Hub",
     Logo = "rbxassetid://100712256015627",
     ToggleKey = Enum.KeyCode.RightControl,
